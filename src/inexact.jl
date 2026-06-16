@@ -79,9 +79,11 @@ mutable struct InexactOracle{T,SO<:SmoothObjective{T}}
     eg::T; ebn::T; eA::T
     records::Vector{InexactRecord{T}}
 end
+# `eta` must satisfy the paper's 0 < eta < min(eta1, 1-eta2); the default 1e-5 is
+# below the default TROptions eta1 = 1e-4 (solve validates the actual pairing).
 function InexactOracle(f::SmoothObjective{T};
-                       kgrad=1.0, kval=1.0, kjac=1.0, kobj=1e2,
-                       rho=0.5, eta=1e-2, zeta=1.5, zeta0=1.0, zfactor=0.5) where {T}
+                       kgrad=0.5, kval=0.5, kjac=0.5, kobj=1e2,
+                       rho=0.5, eta=1e-5, zeta=1.5, zeta0=1.0, zfactor=0.5) where {T}
     z = zero(T)
     InexactOracle{T,typeof(f)}(f, T(kgrad), T(kval), T(kjac), T(kobj), T(rho),
                                T(eta), T(zeta), T(zeta0), T(zfactor),

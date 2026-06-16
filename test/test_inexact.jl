@@ -1,8 +1,10 @@
 # Phase 2b: inexactness (paper Conditions 1 & 2), wired and audited. We do not
 # infer the contract from convergence; we assert the realized per-iteration errors
-# fall within the bounds defined by the POST-MODEL h_k the iteration actually used,
-# and that |ared - cred| stays within the Condition-2 bound — then check the inexact
-# run still converges and lands on the exact solution.
+# fall within the bounds defined by the POST-MODEL h_k the iteration actually used
+# (a postcondition injection makes this hold for ANY kappa, including the paper's
+# kappa = 1, and for rejected iterations after the radius shrinks), that
+# |ared - cred| stays within the Condition-2 bound, and that the inexact run still
+# converges to the exact solution.
 
 @testset "inexactness (Conditions 1 & 2)" begin
     rng = MersenneTwister(31)
@@ -26,53 +28,83 @@
         @test spnorm(Y, bk .- be) <= o.tolb + 1e-12              # ‖b_k-F‖_Y within bound
     end
 
-    # κ < 1 is the sound regime: the h_k fixed-point map has Lipschitz constant ~κ,
-    # so it is a contraction (and the metric noise stays below htol) only for κ < 1
-    # (consistent with the paper's κ_vs > 0). We test there.
-    @testset "contract holds per iteration + converges to the exact solution" begin
-        for Xs in (EuclideanSpace(Float64), WeightedSpace(rand(rng, 5) .+ 0.5))
-            n = 5
+    @testset "contract holds every iteration + converges to exact (kappa = 1)" begin
+        # kappa = 1 is the paper's value. The postcondition + reject refresh make
+        # the contract hold for EVERY recorded iteration (accepted or rejected).
+        cases = ((202, EuclideanSpace(Float64)),
+                 (203, WeightedSpace(rand(MersenneTwister(210), 5) .+ 0.5)))
+        for (seed, Xs) in cases
+            srng = MersenneTwister(seed); n = 5
             f = TikhonovObjective(0.5)
-            F = AffineMap(randn(rng, 1, n), [0.3])
+            F = AffineMap(randn(srng, 1, n), [0.3])
             phi = L1Objective(fill(1e-2, n))
             A = IntervalEnvelope(0.0, 1.0)
             prob = RiskProblem(f, F, phi, A; X=Xs)
-            kg = kv = kj = 0.1
-            htol = 1e-7                                   # above the κ=0.1 metric noise floor
+            kg = kv = kj = 1.0
             oracle = InexactOracle(f; kgrad=kg, kval=kv, kjac=kj, kobj=1e2, rho=0.5)
             res = solve(prob, zeros(n);
-                        opts=TROptions{Float64}(maxit=500, subsolver=:spg, delta0=10.0, htol=htol),
+                        opts=TROptions{Float64}(maxit=2000, subsolver=:spg, delta0=10.0),
                         oracle=oracle)
 
-            @test res.converged                          # inexact run still reaches tolerance
-            @test res.hk <= htol
+            @test res.converged && res.hk <= 1e-8
             @test length(oracle.records) >= 1
 
-            # Every iteration's data is within its own injection tolerance (ρ<1).
-            for r in oracle.records
-                @test r.eg <= r.tolg + 1e-12
-                @test r.eb <= r.tolb + 1e-12
-                @test r.eA <= r.tolj + 1e-12
-                @test abs(r.ared - r.cred) <= r.credbound + 1e-12   # Condition 2
-            end
-            # Condition 1 against the POST-MODEL h_k, where h_k is meaningfully above
-            # the metric noise floor (the fixed point is converged there).
-            meaningful = filter(r -> r.hk > 10 * htol, oracle.records)
-            @test length(meaningful) >= 1
-            for r in meaningful
+            for r in oracle.records                       # EVERY iteration, incl. rejects
                 @test r.eg <= kg * min(r.hk, r.delta)    + 1e-12    # ‖g_k-∇f‖_X
                 @test r.eb <= kv * min(r.hk, r.delta^2)  + 1e-12    # ‖b_k-F‖_Y  (note Δ²)
                 @test r.eA <= kj * min(r.hk, r.delta)    + 1e-12    # ‖A_k-F'‖_op
+                @test abs(r.ared - r.cred) <= r.credbound + 1e-12   # Condition 2
             end
-            # the decision actually used cred (not the exact ared) on >=1 iteration
-            @test any(r -> r.cred != r.ared, oracle.records)
-            # forcing sequence ζ_k -> 0 shrinks the late Condition-2 bound
+            @test any(r -> r.cred != r.ared, oracle.records)       # cred actually used
             @test oracle.records[end].credbound <= oracle.records[1].credbound + 1e-12
 
-            # lands on the exact-solve minimizer (same prob, oracle = nothing)
-            re = solve(prob, zeros(n); opts=TROptions{Float64}(maxit=500, subsolver=:spg))
-            @test norm(res.x - re.x) < 1e-6
+            re = solve(prob, zeros(n); opts=TROptions{Float64}(maxit=2000, subsolver=:spg))
+            @test norm(res.x - re.x) < 1e-6                        # exact minimizer
         end
+    end
+
+    @testset "rejected iterations refresh data for the new radius" begin
+        # Force rejections with a tiny initial radius, then check Condition 1 holds
+        # for every recorded (mostly rejected) iteration.
+        srng = MersenneTwister(404); n = 4
+        f = TikhonovObjective(0.5); F = AffineMap(randn(srng, 1, n), [0.4])
+        prob = RiskProblem(f, F, L1Objective(fill(2e-2, n)), IntervalEnvelope(0.0, 1.0))
+        oracle = InexactOracle(f; kgrad=1.0, kval=1.0, kjac=1.0, rho=0.5)
+        res = solve(prob, zeros(n);
+                    opts=TROptions{Float64}(maxit=2000, subsolver=:cauchy, delta0=1e-3, gamma3=2.0),
+                    oracle=oracle)
+        @test length(oracle.records) >= 5
+        for r in oracle.records
+            @test r.eg <= min(r.hk, r.delta)   + 1e-12
+            @test r.eb <= min(r.hk, r.delta^2) + 1e-12
+            @test r.eA <= min(r.hk, r.delta)   + 1e-12
+        end
+    end
+
+    @testset "Condition 2 eta validation" begin
+        n = 3
+        f = TikhonovObjective(1.0); F = AffineMap(randn(rng, 1, n), [0.0])
+        prob = RiskProblem(f, F, ZeroProx{Float64}(), IntervalEnvelope(0.0, 1.0))
+        # default eta1 = 1e-4, so eta must be < 1e-4; eta = 1e-2 must be rejected.
+        bad = InexactOracle(f; eta=1e-2)
+        @test_throws ArgumentError solve(prob, zeros(n);
+            opts=TROptions{Float64}(delta0=10.0), oracle=bad)
+        ok = InexactOracle(f; eta=1e-5)
+        @test solve(prob, zeros(n); opts=TROptions{Float64}(delta0=10.0, maxit=50), oracle=ok) isa TRResult
+    end
+
+    @testset "stall guard returns :stalled" begin
+        # Force every step to be rejected (acceptance threshold above any achievable
+        # ratio): Δ then shrinks each iteration until it collapses below the iterate
+        # precision, exercising the stall guard (rather than spinning to maxit).
+        srng = MersenneTwister(7); n = 5
+        f = TikhonovObjective(0.5); F = AffineMap(randn(srng, 1, n), [0.3])
+        prob = RiskProblem(f, F, L1Objective(fill(1e-2, n)), IntervalEnvelope(0.0, 1.0))
+        res = solve(prob, zeros(n);
+                    opts=TROptions{Float64}(maxit=5000, subsolver=:spg, delta0=10.0, eta1=2.0))
+        @test res.status == :stalled
+        @test !res.converged
+        @test res.iters < 5000        # stopped early, did not spin to maxit
     end
 
     @testset "exact path unchanged when oracle = nothing" begin

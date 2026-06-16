@@ -105,9 +105,11 @@ end
 
 """
 Result of `solve`. `converged` is true only when `h_k <= htol` AND the prox that
-produced that `h_k` itself converged. `status` is one of `:converged`,
+produced that `h_k` itself converged. `status` is one of `:converged`;
 `:prox_failure` (the stationarity prox hit its iteration cap, so `h_k` is
-unreliable), or `:maxiter`.
+unreliable); `:stalled` (the trust-region radius collapsed below the iterate
+precision before reaching htol — e.g. the achievable stationarity floor is above
+htol under large inexactness); or `:maxiter`.
 """
 struct TRResult{T,V}
     x::V
@@ -144,6 +146,9 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     inexact = oracle !== nothing
     inexact && opts.delta0 <= 0 &&
         throw(ArgumentError("inexact solve requires opts.delta0 > 0"))
+    # Condition 2 requires 0 < eta < min(eta1, 1 - eta2).
+    inexact && !(zero(T) < oracle.eta < min(opts.eta1, one(T) - opts.eta2)) &&
+        throw(ArgumentError("InexactOracle eta must satisfy 0 < eta < min(eta1, 1-eta2)"))
     # The model linearization uses an InexactMap (perturbed F) when inexact;
     # prob.F is never replaced, so objective_value! keeps the exact reference.
     imap = inexact ? InexactMap(prob.F, n) : nothing
@@ -166,10 +171,13 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     gmodp  = zeros(T, n)
     Fbuf   = zeros(T, m)
 
-    # Refresh the model data at `x` and return (h_k, hok). Exact: one pass. Inexact:
-    # inject (g_k, A_k, b_k) at tolerances kappa·min(h_k, Δ) and refine h_k by a
-    # fixed point, warm-started from `hk0`, so the realized errors are consistent
-    # with the POST-MODEL h_k that the iteration (and the Condition-1 bound) uses.
+    # Refresh the model data at `x` for radius `delta` and return (h_k, hok). Exact:
+    # one pass. Inexact: warm-started fixed point that injects (g_k, A_k, b_k) at
+    # tolerances kappa·min(h_k, Δ[^2]) and refines h_k, followed by a POSTCONDITION
+    # injection consistent with the final h_k. The postcondition guarantees the data
+    # used by the model/steps satisfies Condition 1 against the REPORTED h_k for any
+    # kappa (the fixed point — a contraction only for kappa < 1 — just improves the
+    # h_k estimate; correctness of the contract does not depend on its convergence).
     function refresh!(x, delta, hk0)
         if !inexact
             gradient!(gcoord, prob.f, x); cnt.ngrad += 1
@@ -191,6 +199,14 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
             hk = hknew
             done && break
         end
+        # Postcondition: inject data consistent with the final (reported) h_k so the
+        # model/steps satisfy Condition 1 against it; record the realized errors.
+        set_tols!(oracle, hk, delta)
+        inject_gradient!(gcoord, oracle, X, x); cnt.ngrad += 1
+        inject_linearization!(imap, oracle, X, Y, x)
+        riesz!(dg, X, gcoord)
+        setmodel!(model, x, gcoord)
+        reanchor!(psi, x)
         return hk, hok
     end
 
@@ -271,18 +287,27 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         if reject
             delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
                                                         # ROL uses gamma1*min(snorm,delta)
+            if inexact
+                # The inexact data tolerances depend on Δ (Condition 1), so the data
+                # must be rebuilt at the same x for the shrunken radius.
+                hk, hok = refresh!(x, delta, hk)
+                sval = value(prob.f, x); nval = value(psi, x)
+                cnt.nfval += 1; cnt.npsi += 1
+            end
         else                                            # accept
             copyto!(x, xtrial)
             Jval = Jtrial
             if rho >= opts.eta2
                 delta = min(opts.gamma3 * delta, opts.deltamax)
             end
-            inexact && (oracle.zeta_k *= oracle.zfactor)   # forcing sequence ζ_k -> 0
             hk, hok = refresh!(x, delta, hk)            # re-anchor + inexact data at new x (warm)
             sval = value(prob.f, x)
             nval = value(psi, x)
             cnt.nfval += 1; cnt.npsi += 1
         end
+        # Forcing sequence ζ_k -> 0 advances every outer iteration (the paper requires
+        # ζ_k -> 0 over iterations, not over accepted steps).
+        inexact && (oracle.zeta_k *= oracle.zfactor)
 
         opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
     end
