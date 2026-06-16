@@ -182,8 +182,10 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
         rho, flag = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
 
-        # Reject on: an unreliable step (a prox failed), a nonpositive/NaN
-        # predicted reduction, or an insufficient ratio. Otherwise accept.
+        # Reject on: an unreliable step (a prox failed); a nonpositive actual
+        # reduction or NaN (flags >= NPOSPREDPOS); or an insufficient ratio in the
+        # ordinary SUCCESS case. POSPREDNEG (actual improves though the model
+        # predicted a decrease) is accepted, matching ROL.
         reject = !stepok || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
         if reject
             delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
