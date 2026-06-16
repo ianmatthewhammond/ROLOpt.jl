@@ -23,6 +23,16 @@ end
     rng = MersenneTwister(2)
     Xeuc = EuclideanSpace(Float64)
 
+    @testset "constructor validation" begin
+        @test_throws ArgumentError IntervalEnvelope(1.0, 0.0)            # a > b
+        @test_throws ArgumentError IntervalEnvelope(0.0, 1.0, 0)         # n < 1
+        @test_throws ArgumentError WeightedSpace([1.0, -0.5, 2.0])       # nonpositive weight
+        @test_throws ArgumentError ConvexCombinationEnvelope(0.5, 0.9, [0.3, 0.3])   # sum != 1
+        @test_throws ArgumentError ConvexCombinationEnvelope(0.5, 1.0, [0.5, 0.5])   # p >= 1
+        @test_throws ArgumentError ConvexCombinationEnvelope(1.5, 0.9, [0.5, 0.5])   # lambda > 1
+        @test_throws ArgumentError ConvexCombinationEnvelope(0.5, 0.9, [0.6, 0.6, -0.2])  # neg prob
+    end
+
     @testset "IntervalEnvelope [0,1] scalar (Euclidean)" begin
         A = IntervalEnvelope(0.0, 1.0)
         for _ in 1:50

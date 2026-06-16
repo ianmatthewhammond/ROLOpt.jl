@@ -66,7 +66,7 @@ function hstat!(step, pgiter, nobj, X::HilbertSpace, x, dg, t0, cnt::Counters)
 end
 
 """
-    dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm, ok)
+    dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm, worst_pgnorm)
 
 Cauchy point for the TR subproblem `min q_k(x_k+s) + psi_k(x_k+s)` s.t. ‖s‖ ≤ del,
 via a bidirectional proximal search on the step length `alpha`. Writes the Cauchy

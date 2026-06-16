@@ -35,9 +35,15 @@ struct IntervalEnvelope{T} <: RiskEnvelope{T}
     a::T
     b::T
     n::Int
+    # Validation lives in the inner constructor so the auto-generated outer
+    # constructor (which would otherwise shadow validation for n::Int) is suppressed.
+    function IntervalEnvelope{T}(a, b, n) where {T}
+        a <= b || throw(ArgumentError("IntervalEnvelope requires a <= b"))
+        n >= 1 || throw(ArgumentError("IntervalEnvelope requires n >= 1"))
+        new{T}(a, b, Int(n))
+    end
 end
-IntervalEnvelope(a::T, b::T) where {T} = IntervalEnvelope{T}(a, b, 1)
-IntervalEnvelope(a::T, b::T, n::Integer) where {T} = IntervalEnvelope{T}(a, b, Int(n))
+IntervalEnvelope(a::T, b::T, n::Integer=1) where {T} = IntervalEnvelope{T}(a, b, n)
 
 function suppA(A::IntervalEnvelope{T}, Y::HilbertSpace, y) where {T}
     w = proxweights(Y)
@@ -81,6 +87,14 @@ struct ConvexCombinationEnvelope{T,V<:AbstractVector{T}} <: RiskEnvelope{T}
     u::T
 end
 function ConvexCombinationEnvelope(lambda::T, p::T, probs::AbstractVector{T}) where {T}
+    zero(T) <= lambda <= one(T) ||
+        throw(ArgumentError("ConvexCombinationEnvelope requires 0 <= lambda <= 1"))
+    zero(T) <= p < one(T) ||
+        throw(ArgumentError("ConvexCombinationEnvelope requires 0 <= p < 1"))
+    all(>(zero(T)), probs) ||
+        throw(ArgumentError("ConvexCombinationEnvelope requires strictly positive probabilities"))
+    isapprox(sum(probs), one(T); atol=sqrt(eps(T))) ||
+        throw(ArgumentError("ConvexCombinationEnvelope requires sum(probs) ≈ 1"))
     l = one(T) - lambda
     u = (one(T) - lambda) + lambda / (one(T) - p)
     ConvexCombinationEnvelope{T,typeof(probs)}(lambda, p, probs, l, u)

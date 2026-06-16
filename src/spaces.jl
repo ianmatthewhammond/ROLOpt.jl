@@ -32,6 +32,8 @@ EuclideanSpace(::Type{T}) where {T<:Real} = HilbertSpace{T,Nothing}(nothing)
 
 """Diagonal-metric space `M = diag(weights)` (e.g. element volumes, probabilities)."""
 function WeightedSpace(weights::AbstractVector{T}) where {T<:Real}
+    all(>(zero(T)), weights) ||
+        throw(ArgumentError("WeightedSpace requires strictly positive weights"))
     HilbertSpace{T,typeof(weights)}(weights)
 end
 
