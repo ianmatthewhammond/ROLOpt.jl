@@ -42,9 +42,9 @@ const TR_NAN        = 4   # NaN reduction (reject)
 # rho = 1 (SUCCESS), preventing near-solution stagnation from catastrophic
 # cancellation in pRed; flags nonpositive/NaN reductions so the caller rejects
 # (important when a failed prox produces a meaningless predicted reduction).
-function analyze_ratio(fold::T, ftrial::T, pRed::T, epsi::T) where {T}
+# Core: given the (computed) actual reduction `aRed` and predicted `pRed`.
+function analyze_ratio_red(aRed::T, pRed::T, fold::T, epsi::T) where {T}
     eps = epsi * max(one(T), abs(fold))
-    aRed = fold - ftrial
     aRed_safe = aRed + eps
     pRed_safe = pRed + eps
     if ((abs(aRed_safe) < epsi && abs(pRed_safe) < epsi) || aRed == pRed)
@@ -63,6 +63,9 @@ function analyze_ratio(fold::T, ftrial::T, pRed::T, epsi::T) where {T}
         return rho, TR_SUCCESS
     end
 end
+# Exact path: reduction is fold - ftrial.
+analyze_ratio(fold::T, ftrial::T, pRed::T, epsi::T) where {T} =
+    analyze_ratio_red(fold - ftrial, pRed, fold, epsi)
 
 """Trust-region options (defaults follow the paper's Numerics section)."""
 struct TROptions{T}
@@ -133,11 +136,19 @@ end
 Run Cauchy-only TR-Risk from `x0`.
 """
 function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
-               opts::TROptions{T}=TROptions{T}()) where {T}
+               opts::TROptions{T}=TROptions{T}(),
+               oracle::Union{Nothing,InexactOracle{T}}=nothing) where {T}
     X = prob.X; Y = prob.Y
     n = length(x0)
     m = rangedim(prob.F)
-    psi = PsiModel(prob.phi, prob.A, prob.F, X, Y, n; opts=opts.dualspg)
+    inexact = oracle !== nothing
+    inexact && opts.delta0 <= 0 &&
+        throw(ArgumentError("inexact solve requires opts.delta0 > 0"))
+    # The model linearization uses an InexactMap (perturbed F) when inexact;
+    # prob.F is never replaced, so objective_value! keeps the exact reference.
+    imap = inexact ? InexactMap(prob.F, n) : nothing
+    Fmodel = inexact ? imap : prob.F
+    psi = PsiModel(prob.phi, prob.A, Fmodel, X, Y, n; opts=opts.dualspg)
     model = QuadraticModel(prob.f, X, n)
     cnt = Counters()
 
@@ -155,27 +166,62 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     gmodp  = zeros(T, n)
     Fbuf   = zeros(T, m)
 
+    # Refresh the model data at `x` and return (h_k, hok). Exact: one pass. Inexact:
+    # inject (g_k, A_k, b_k) at tolerances kappa·min(h_k, Δ) and refine h_k by a
+    # fixed point, warm-started from `hk0`, so the realized errors are consistent
+    # with the POST-MODEL h_k that the iteration (and the Condition-1 bound) uses.
+    function refresh!(x, delta, hk0)
+        if !inexact
+            gradient!(gcoord, prob.f, x); cnt.ngrad += 1
+            riesz!(dg, X, gcoord)
+            setmodel!(model, x, gcoord)
+            reanchor!(psi, x)
+            return hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
+        end
+        hk = hk0; hok = false
+        for _ in 1:10
+            set_tols!(oracle, hk, delta)
+            inject_gradient!(gcoord, oracle, X, x); cnt.ngrad += 1
+            inject_linearization!(imap, oracle, X, Y, x)
+            riesz!(dg, X, gcoord)
+            setmodel!(model, x, gcoord)
+            reanchor!(psi, x)                           # b_k = F(x) + e_b via imap
+            hknew, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
+            done = abs(hknew - hk) <= T(1e-3) * max(hknew, eps(T))
+            hk = hknew
+            done && break
+        end
+        return hk, hok
+    end
+
     # --- Initialize at x_1 ---
-    reanchor!(psi, x)                                   # A_1, b_1 = F(x_1)
-    sval = value(prob.f, x)                             # f(x_1)
-    nval = value(psi, x)                                # psi_1(x_1) = suppA(F(x_1)) + phi(x_1)
+    delta = opts.delta0 > 0 ? opts.delta0 : zero(T)     # finalized below for exact
+    hk, hok = refresh!(x, delta, opts.delta0 > 0 ? opts.delta0 : one(T))
+    sval = value(prob.f, x)                             # f(x_1) (exact; cancels in pRed)
+    nval = value(psi, x)                                # model nonsmooth at the anchor
     cnt.nfval += 1; cnt.npsi += 1
-    Jval = sval + nval                                  # true J(x_1)
-    gradient!(gcoord, prob.f, x); cnt.ngrad += 1
-    riesz!(dg, X, gcoord)
-    setmodel!(model, x, gcoord)
-    hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
-    delta = opts.delta0 > 0 ? opts.delta0 : spnorm(X, dg)
+    Jval = inexact ? objective_value!(Fbuf, prob, x) : sval + nval   # exact true J(x_1)
+    inexact && (cnt.nfval += 1)
+    !inexact && opts.delta0 <= 0 && (delta = spnorm(X, dg))
 
     opts.verbose > 0 && _print_header()
     opts.verbose > 0 && _print_row(0, Jval, hk, delta, NaN, cnt)
 
     converged = false
+    stalled = false
     iter = 0
     while iter < opts.maxit
         # Certified convergence requires the h_k-defining prox to have converged.
         if hk <= opts.htol && hok
             converged = true
+            break
+        end
+        # Stall guard: if the radius has collapsed below the precision of the
+        # iterate, no representable step can make further progress (this happens
+        # when the achievable stationarity floor is above htol, e.g. with large
+        # inexactness). Stop instead of spinning to maxit.
+        if delta <= eps(T) * max(one(T), spnorm(X, x))
+            stalled = true
             break
         end
         iter += 1
@@ -196,13 +242,23 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         end
         pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
 
-        # True actual reduction, with ROL's roundoff-safeguarded, flagged ratio test.
+        # Exact reference reduction (the truth uses prob.F, never the inexact map).
         Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
-        rho, flag = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
+        ared = Jval - Jtrial
+        # The accept/reject decision uses the COMPUTED reduction: exact ared in the
+        # exact case; cred = ared + bounded error (Condition 2) in the inexact case.
+        if inexact
+            cred, credbound = computed_reduction(oracle, ared, pRed, iter)
+            rho, flag = analyze_ratio_red(cred, pRed, Jval, opts.trsafe * eps(T))
+            push_record!(oracle, iter, hk, delta, pRed, ared, cred, credbound)
+        else
+            cred = ared
+            rho, flag = analyze_ratio_red(ared, pRed, Jval, opts.trsafe * eps(T))
+        end
 
         # Graded prox-reliability policy:
         #  * A step whose proxes merely missed the dual-SPG tol by a little
-        #    (worstpg <= step_prox_tol) is judged on its true rho — pRed/aRed are
+        #    (worstpg <= step_prox_tol) is judged on its true rho — pRed/cred are
         #    evaluated at the point actually reached. (Force-rejecting these caused
         #    a death spiral on hard CVaR duals that converge just shy of tol.)
         #  * A grossly unreliable step (worstpg > step_prox_tol) is rejected and,
@@ -218,23 +274,23 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         else                                            # accept
             copyto!(x, xtrial)
             Jval = Jtrial
-            reanchor!(psi, x)                           # re-anchor at new iterate
-            sval = value(prob.f, x)
-            nval = value(psi, x)
-            cnt.nfval += 1; cnt.npsi += 1
-            gradient!(gcoord, prob.f, x); cnt.ngrad += 1
-            riesz!(dg, X, gcoord)
-            setmodel!(model, x, gcoord)
-            hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
             if rho >= opts.eta2
                 delta = min(opts.gamma3 * delta, opts.deltamax)
             end
+            inexact && (oracle.zeta_k *= oracle.zfactor)   # forcing sequence ζ_k -> 0
+            hk, hok = refresh!(x, delta, hk)            # re-anchor + inexact data at new x (warm)
+            sval = value(prob.f, x)
+            nval = value(psi, x)
+            cnt.nfval += 1; cnt.npsi += 1
         end
 
         opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
     end
 
-    status = converged ? :converged : (hok ? :maxiter : :prox_failure)
+    status = converged ? :converged :
+             !hok      ? :prox_failure :   # unreliable stationarity prox dominates
+             stalled   ? :stalled :
+                         :maxiter
     return TRResult{T,Vector{T}}(x, Jval, hk, iter, converged, status, cnt)
 end
 

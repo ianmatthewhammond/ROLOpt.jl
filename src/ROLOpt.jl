@@ -19,6 +19,7 @@ include("check.jl")
 include("psimodel.jl")
 include("model.jl")
 include("subsolvers.jl")
+include("inexact.jl")
 include("trustregion.jl")
 
 # Spaces
@@ -44,6 +45,9 @@ export PsiModel, reanchor!, DualSPGResult, DualSPGOptions
 
 # Model + subsolvers
 export QuadraticModel, setmodel!, modelhessvec!, Counters, pgstep!, hstat!, dcauchy!, dspg!, SpgParams
+
+# Inexactness
+export InexactOracle, InexactMap, InexactRecord, opnorm_metric
 
 # Trust region
 export RiskProblem, TROptions, TRResult, CauchyParams, objective_value!, solve
