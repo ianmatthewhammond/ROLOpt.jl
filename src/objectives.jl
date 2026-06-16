@@ -163,6 +163,18 @@ value(phi::ProxObjective, x) = throw(MethodError(value, (phi, x)))
 prox!(out, phi::ProxObjective, z, t) = throw(MethodError(prox!, (out, phi, z, t)))
 prox(phi::ProxObjective, z, t) = prox!(similar(z), phi, z, t)
 
+# Metric-aware prox in the X inner product:
+#   prox^X_{t phi}(z) = argmin_x ½ (x-z)ᵀ M_X (x-z) + t phi(x).
+# For a diagonal metric M_X = diag(w) and separable phi this is the per-component
+# Euclidean prox with step t/wᵢ (the box-projection part of phi is metric-
+# independent). The concrete prox! kernels accept a vector `t`, so we pass t/w.
+@inline proxX!(out, phi::ProxObjective, ::HilbertSpace{T,Nothing}, z, t, teff) where {T} =
+    prox!(out, phi, z, t)
+@inline function proxX!(out, phi::ProxObjective, X::HilbertSpace{T,<:AbstractVector}, z, t, teff) where {T}
+    @. teff = t / X.weights
+    return prox!(out, phi, z, teff)
+end
+
 @inline _soft(u, k) = u - clamp(u, -k, k)   # soft-threshold: sign(u)·max(|u|-k,0)
 
 """ZeroProx: phi ≡ 0, prox = identity."""

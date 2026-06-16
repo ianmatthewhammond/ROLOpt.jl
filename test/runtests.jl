@@ -11,4 +11,5 @@ using Random
     include("test_lasso_reduce.jl")
     include("test_risk_finitedim_p1.jl")
     include("test_solver_robustness.jl")
+    include("test_weighted.jl")
 end

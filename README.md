@@ -32,8 +32,15 @@ Algorithm 2, and the `RiskEnvelope` abstraction.
 | Phase | Scope | State |
 |-------|-------|-------|
 | **1** | Cauchy-only TR-Risk, exact evaluations, Euclidean spaces; Algorithm 2; `IntervalEnvelope`; Zero/L1/Bound/BoxL1 `phi` | **done, tested** |
-| 2 | Weighted (mass-matrix / probability) spaces, CVaR envelope, wired inexactness, NCG/SPG improver subsolvers, `(theta_k, F'')` curvature | planned |
+| **2a** | Diagonal weighted (mass-matrix / probability) spaces, metric-aware prox/adjoint, `ConvexCombinationEnvelope` (E+CVaR) | **done, tested** |
+| 2b | Wired inexactness (Conditions 1–2), NCG/SPG improver subsolvers, `(theta_k, F'')` curvature | planned |
 | 3 | Performance / type-stability hardening (zero-alloc hot loops, BigFloat) | planned |
+
+Weighted spaces use a **diagonal** metric (`M = diag(w)`): element volumes for the
+control space `X`, probabilities for `Y = L²(Ω,P)`. This is what the paper uses
+for mesh independence and keeps the separable prox / box projection closed-form.
+Convergence speed tracks metric/Hessian compatibility — with the natural pairing
+(`f = (τ/2)‖x‖_X²`) the weighted solve converges as fast as the Euclidean one.
 
 ## Example
 

@@ -117,7 +117,7 @@ linearization). Distinct from the model values `psi_k.value` / `q_k`.
 """
 function objective_value!(Fbuf, prob::RiskProblem, x)
     value!(Fbuf, prob.F, x)
-    return value(prob.f, x) + suppA(prob.A, Fbuf) + value(prob.phi, x)
+    return value(prob.f, x) + suppA(prob.A, prob.Y, Fbuf) + value(prob.phi, x)
 end
 
 """
@@ -171,10 +171,11 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         end
         iter += 1
 
-        # Cauchy step (model anchored/frozen at current x)
-        _, svalc, nvalc, _, stepok = dcauchy!(s, model, psi, X, x, dg, delta,
-                                              opts.alpha0, sval, nval, px, dwa, dwa1,
-                                              cnt, opts.cauchy)
+        # Cauchy step (model anchored/frozen at current x). Prox reliability is
+        # tracked inside dcauchy! via cnt.nproxfail; we do not force-reject on it.
+        _, svalc, nvalc, _, _ = dcauchy!(s, model, psi, X, x, dg, delta,
+                                         opts.alpha0, sval, nval, px, dwa, dwa1,
+                                         cnt, opts.cauchy)
         @. xtrial = x + s
         pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
 
@@ -182,11 +183,16 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
         rho, flag = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
 
-        # Reject on: an unreliable step (a prox failed); a nonpositive actual
-        # reduction or NaN (flags >= NPOSPREDPOS); or an insufficient ratio in the
-        # ordinary SUCCESS case. POSPREDNEG (actual improves though the model
-        # predicted a decrease) is accepted, matching ROL.
-        reject = !stepok || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
+        # Reject on: a nonpositive actual reduction or NaN (flags >= NPOSPREDPOS);
+        # or an insufficient ratio in the ordinary SUCCESS case. POSPREDNEG (actual
+        # improves though the model predicted a decrease) is accepted, matching ROL.
+        # NOTE: a step whose Cauchy prox did not reach the dual-SPG tolerance
+        # (`!stepok`) is NOT force-rejected — pRed/aRed are evaluated at the point
+        # actually reached, so rho judges it on its true merit. (Force-rejecting it
+        # caused a death spiral on hard CVaR duals that converge just shy of tol.)
+        # Prox unreliability is surfaced via Counters.nproxfail, and certified
+        # convergence still requires the h_k-defining prox to have converged (hok).
+        reject = flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
         if reject
             delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
                                                         # ROL uses gamma1*min(snorm,delta)

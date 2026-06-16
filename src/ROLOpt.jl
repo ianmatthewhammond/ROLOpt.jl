@@ -23,17 +23,18 @@ include("trustregion.jl")
 
 # Spaces
 export HilbertSpace, EuclideanSpace, WeightedSpace
-export inner, riesz!, spnorm, apply
+export inner, riesz!, metric!, proxweights, spnorm, apply
 
 # Objectives
 export SmoothObjective, ZeroObjective, DiagonalQuadratic, QuadraticObjective, TikhonovObjective
 export VectorMap, AffineMap, QuadraticMap, rangedim, mapvalue
 export ProxObjective, ZeroProx, L1Objective, BoundConstraint, BoxL1Objective
 export value, value!, gradient, gradient!, hessVec, hessVec!
-export applyJacobian!, applyAdjointJacobian!, applyAdjointHessian!, prox, prox!
+export applyJacobian!, applyAdjointJacobian!, applyAdjointHessian!, prox, prox!, proxX!
 
 # Risk envelope
-export RiskEnvelope, IntervalEnvelope, suppA, project!, projectdual, bound, initdual!
+export RiskEnvelope, IntervalEnvelope, ConvexCombinationEnvelope
+export suppA, project!, projectdual, bound, initdual!
 
 # Derivative checks
 export check_gradient, check_hessvec, check_jacobian, check_adjoint, check_hess_sym

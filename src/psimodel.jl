@@ -43,18 +43,18 @@ end
 
 """Preallocated scratch for `PsiModel` (X-space length n, Y-space length m)."""
 struct PsiWorkspace{T,VX<:AbstractVector{T},VY<:AbstractVector{T}}
-    w::VX; adjp::VX; pcur::VX; ptrial::VX; dz::VX; xtmp::VX  # X primal
-    adj::VX                                                  # X coord (A_k^* theta)
-    ell::VY                                                  # Y (value() scratch)
-    mu::VY; mutrial::VY; s::VY; sprev::VY; muprev::VY        # Y
-    tmptheta::VY; thetatrial::VY                             # Y
-    dq::Vector{T}                                            # nonmonotone d-memory
+    w::VX; adjp::VX; pcur::VX; ptrial::VX; dz::VX; xtmp::VX; teff::VX  # X primal
+    adj::VX                                                           # X coord (Aᵀ(M_Y theta))
+    ell::VY                                                           # Y (value() scratch)
+    mu::VY; mutrial::VY; s::VY; sprev::VY; muprev::VY                 # Y
+    tmptheta::VY; thetatrial::VY; ytmp::VY                            # Y (ytmp = M_Y theta)
+    dq::Vector{T}                                                     # nonmonotone d-memory
 end
 function PsiWorkspace(::Type{T}, n::Integer, m::Integer) where {T}
     vx() = zeros(T, n)
     vy() = zeros(T, m)
-    PsiWorkspace{T,Vector{T},Vector{T}}(vx(), vx(), vx(), vx(), vx(), vx(), vx(),
-        vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), T[])
+    PsiWorkspace{T,Vector{T},Vector{T}}(vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(),
+        vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), T[])
 end
 
 """
@@ -99,16 +99,19 @@ function value(psi::PsiModel, x)
     @. ws.xtmp = x - psi.xk
     applyJacobian!(ws.ell, psi.F, ws.xtmp, psi.xk)
     ws.ell .+= psi.bk
-    return suppA(psi.A, ws.ell) + value(psi.phi, x)
+    return suppA(psi.A, psi.Y, ws.ell) + value(psi.phi, x)
 end
 
 # d(theta): writes p(theta) into pbuf and ell_k(p) (= grad d) into mubuf, returns d.
+# The metric adjoint is A_k^* theta = riesz_X(Aᵀ (M_Y theta)) so that
+# (A_k v, theta)_Y = (v, A_k^* theta)_X under the X/Y metrics.
 function _dual_d!(psi::PsiModel{T}, z, t, theta, pbuf, mubuf) where {T}
     ws = psi.ws
-    applyAdjointJacobian!(ws.adj, psi.F, theta, psi.xk)   # A_k^* theta (coord X)
-    riesz!(ws.adjp, psi.X, ws.adj)                        # -> primal X
+    metric!(ws.ytmp, psi.Y, theta)                       # M_Y theta (coord Y)
+    applyAdjointJacobian!(ws.adj, psi.F, ws.ytmp, psi.xk) # Aᵀ (M_Y theta) (coord X)
+    riesz!(ws.adjp, psi.X, ws.adj)                        # A_k^* theta (primal X)
     @. ws.w = z - t * ws.adjp
-    prox!(pbuf, psi.phi, ws.w, t)                         # p = prox_{t phi}(...)
+    proxX!(pbuf, psi.phi, psi.X, ws.w, t, ws.teff)       # p = prox^X_{t phi}(...)
     @. ws.xtmp = pbuf - psi.xk
     applyJacobian!(mubuf, psi.F, ws.xtmp, psi.xk)         # A_k(p - x_k)
     mubuf .+= psi.bk                                      # + b_k = ell_k(p) = grad d
@@ -121,7 +124,7 @@ end
 function prox!(out, psi::PsiModel{T}, z, t) where {T}
     ws = psi.ws; o = psi.opts; A = psi.A; Y = psi.Y
     theta = psi.theta
-    project!(theta, A, theta)                             # feasible warm start
+    project!(theta, A, Y, theta)                          # feasible warm start
     dcur = _dual_d!(psi, z, t, theta, ws.pcur, ws.mu)     # mu = grad d(theta)
     empty!(ws.dq); push!(ws.dq, dcur)
     gamma = clamp(one(T) / max(spnorm(Y, ws.mu), eps(T)), o.gmin, o.gmax)
@@ -139,7 +142,7 @@ function prox!(out, psi::PsiModel{T}, z, t) where {T}
         end
         # projected ascent step s = projA(theta + gamma*mu) - theta
         @. ws.tmptheta = theta + gamma * ws.mu
-        project!(ws.s, A, ws.tmptheta)
+        project!(ws.s, A, Y, ws.tmptheta)
         @. ws.s -= theta
         slope = inner(Y, ws.mu, ws.s)                    # (mu, s)_Y >= 0
         pgnorm = spnorm(Y, ws.s) / gamma
