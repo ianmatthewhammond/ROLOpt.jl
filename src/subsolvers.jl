@@ -165,3 +165,90 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     sval = sold + gs + half * apply(dwa, s)
     return alpha, sval, nval, snorm, worst[]
 end
+
+"""Spectral proximal-gradient improver parameters (defaults from ROL)."""
+struct SpgParams{T}
+    lambdaMin::T; lambdaMax::T; tol1::T; tol2::T; maxit::Int
+end
+function SpgParams{T}(; lambdaMin=1e-8, lambdaMax=1e8, tol1=1e-4, tol2=1e-2, maxit=25) where {T}
+    SpgParams{T}(T(lambdaMin), T(lambdaMax), T(tol1), T(tol2), Int(maxit))
+end
+
+"""
+    dspg!(y, model, nobj, X, x, gfk, del, sval, nval, gmodc, gmodp, step, pgi, hs, dx, cnt, p) -> (sval, nval, worst_pgnorm)
+
+Spectral proximal-gradient improver. Starting from the Cauchy point `y` (= x + s_c)
+with model values `sval`/`nval` there, take Barzilai–Borwein proximal-gradient steps
+to further reduce the model `m_k(y) = q_k(y) + psi_k(y)` within `‖y-x‖_X ≤ del`,
+never increasing it (so the fraction-of-Cauchy-decrease bound still holds). `gfk` is
+the coordinate gradient `∇f(x_k)`. The trust region is enforced inline by capping
+each step at the boundary (no Brent root-find). `worst_pgnorm` is the worst dual-SPG
+residual among the proxes used here. Port of ROL `TrustRegionAlgorithm::dspg2`,
+restarted from the Cauchy point. (`gmodc/gmodp/step/pgi/hs/dx` are scratch.)
+"""
+function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
+               sval, nval, gmodc, gmodp, step, pgi, hs, dx, cnt, p) where {T}
+    half = T(1) / 2
+    safeguard = T(1e2) * eps(T)
+    del2 = del * del
+    worst = Ref(zero(T))
+
+    # Model gradient at y (coordinate): gmod = ∇f(x_k) + H (y - x_k) = ∇q_k(y).
+    @. dx = y - model.xk
+    modelhessvec!(hs, model, dx); cnt.nhess += 1
+    @. gmodc = gfk + hs
+    nold = nval
+
+    # Initial spectral step + proximal-gradient step from y.
+    riesz!(gmodp, X, gmodc)
+    lambda = clamp(one(T) / max(spnorm(X, gmodp), eps(T)), p.lambdaMin, p.lambdaMax)
+    res = pgstep!(pgi, step, nobj, y, gmodp, lambda)
+    countprox!(cnt, res); worst[] = max(worst[], spg_pgnorm(res, T))
+    gs = apply(gmodc, step)
+    ss = inner(X, step, step)
+    gtol = min(p.tol1, p.tol2 * sqrt(ss) / lambda)
+
+    for _ in 1:p.maxit
+        modelhessvec!(hs, model, step); cnt.nhess += 1   # H·step (coord)
+        sHs = apply(hs, step)
+        nval = value(nobj, pgi); cnt.npsi += 1           # psi at the prox point
+
+        # Cap the step at the trust-region boundary: largest alpha in [0,1] with
+        # ‖(y-x) + alpha·step‖_X^2 = s0s0 + 2·alpha·ss0 + alpha^2·ss <= del^2.
+        @. dx = y - x
+        ss0 = inner(X, dx, step)
+        s0s0 = inner(X, dx, dx)
+        disc = ss0 * ss0 - ss * (s0s0 - del2)
+        alphaMax = (ss > safeguard && disc >= zero(T)) ?
+                   clamp((-ss0 + sqrt(disc)) / ss, zero(T), one(T)) : one(T)
+        # 1-D model minimizer along step, capped by the trust region.
+        alpha = (sHs <= safeguard) ? alphaMax : min(alphaMax, -(gs + nval - nold) / sHs)
+        alpha = clamp(alpha, zero(T), alphaMax)
+
+        if alpha >= one(T) - safeguard                   # full step to the prox point
+            copyto!(y, pgi)
+            sval += gs + half * sHs
+            @. gmodc += hs
+        else                                             # partial step
+            @. y += alpha * step
+            nval = value(nobj, y); cnt.npsi += 1
+            sval += alpha * (gs + half * alpha * sHs)
+            @. gmodc += alpha * hs
+        end
+        nold = nval
+
+        @. dx = y - x
+        spnorm(X, dx) >= del - safeguard && break        # on the TR boundary
+
+        # New spectral (BB) step length, then the next proximal-gradient step.
+        lambda = clamp((sHs <= safeguard) ? one(T) / max(spnorm(X, gmodp), eps(T)) : ss / sHs,
+                       p.lambdaMin, p.lambdaMax)
+        riesz!(gmodp, X, gmodc)
+        res = pgstep!(pgi, step, nobj, y, gmodp, lambda)
+        countprox!(cnt, res); worst[] = max(worst[], spg_pgnorm(res, T))
+        gs = apply(gmodc, step)
+        ss = inner(X, step, step)
+        sqrt(ss) / lambda <= gtol && break               # proximal-gradient stationary
+    end
+    return sval, nval, worst[]
+end

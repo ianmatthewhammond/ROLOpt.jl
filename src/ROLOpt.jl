@@ -43,7 +43,7 @@ export check_gradient, check_hessvec, check_jacobian, check_adjoint, check_hess_
 export PsiModel, reanchor!, DualSPGResult, DualSPGOptions
 
 # Model + subsolvers
-export QuadraticModel, setmodel!, modelhessvec!, Counters, pgstep!, hstat!, dcauchy!
+export QuadraticModel, setmodel!, modelhessvec!, Counters, pgstep!, hstat!, dcauchy!, dspg!, SpgParams
 
 # Trust region
 export RiskProblem, TROptions, TRResult, CauchyParams, objective_value!, solve

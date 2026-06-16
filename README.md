@@ -33,7 +33,8 @@ Algorithm 2, and the `RiskEnvelope` abstraction.
 |-------|-------|-------|
 | **1** | Cauchy-only TR-Risk, exact evaluations, Euclidean spaces; Algorithm 2; `IntervalEnvelope`; Zero/L1/Bound/BoxL1 `phi` | **done, tested** |
 | **2a** | Diagonal weighted (mass-matrix / probability) spaces, metric-aware prox/adjoint, `ConvexCombinationEnvelope` (E+CVaR) | **done, tested** |
-| 2b | Wired inexactness (Conditions 1–2), NCG/SPG improver subsolvers, `(theta_k, F'')` curvature | planned |
+| **2b-i** | SPG improver subsolver (`subsolver=:spg`) — makes the nonsmooth CVaR problem converge fast | **done, tested** |
+| 2b | Wired inexactness (Conditions 1–2), `(theta_k, F'')` curvature, NCG subsolver | planned |
 | 3 | Performance / type-stability hardening (zero-alloc hot loops, BigFloat) | planned |
 
 Weighted spaces use a **diagonal** metric (`M = diag(w)`): element volumes for the

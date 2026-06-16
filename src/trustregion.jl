@@ -80,7 +80,9 @@ struct TROptions{T}
     htol::T          # stop when h_k <= htol
     maxit::Int
     verbose::Int
+    subsolver::Symbol  # :cauchy (Cauchy point only) or :spg (Cauchy + SPG improver)
     dualspg::DualSPGOptions{T}
+    spg::SpgParams{T}
 end
 # Note `alpha0` defaults to `t0`: per the Phase-1 rule the Cauchy bidirectional
 # search starts from the same prox-gradient parameter `t0` used for h_k.
@@ -88,11 +90,14 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       gamma1=0.25, gamma3=10, t0=1, alpha0=t0,
                       mu0=1e-2, interpf=0.1, extrapf=10, redlim=10, explim=10, qtol=1e-8,
                       trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
-                      dualspg::DualSPGOptions{T}=DualSPGOptions{T}()) where {T}
+                      subsolver::Symbol=:cauchy,
+                      dualspg::DualSPGOptions{T}=DualSPGOptions{T}(),
+                      spg::SpgParams{T}=SpgParams{T}()) where {T}
+    subsolver in (:cauchy, :spg) || throw(ArgumentError("subsolver must be :cauchy or :spg"))
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
                  T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
-                 Int(maxit), Int(verbose), dualspg)
+                 Int(maxit), Int(verbose), subsolver, dualspg, spg)
 end
 
 """
@@ -146,6 +151,8 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     px     = zeros(T, n)     # dcauchy trial iterate
     dwa    = zeros(T, n)
     dwa1   = zeros(T, n)
+    gmodc  = zeros(T, n)     # SPG improver scratch
+    gmodp  = zeros(T, n)
     Fbuf   = zeros(T, m)
 
     # --- Initialize at x_1 ---
@@ -179,6 +186,14 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                                                opts.alpha0, sval, nval, px, dwa, dwa1,
                                                cnt, opts.cauchy)
         @. xtrial = x + s
+        if opts.subsolver === :spg
+            # Improve the Cauchy point with spectral proximal-gradient steps; the
+            # model value only decreases, so the fraction-of-Cauchy-decrease holds.
+            svalc, nvalc, wpg = dspg!(xtrial, model, psi, X, x, gcoord, delta,
+                                      svalc, nvalc, gmodc, gmodp, step, pgiter, dwa, px,
+                                      cnt, opts.spg)
+            worstpg = max(worstpg, wpg)
+        end
         pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
 
         # True actual reduction, with ROL's roundoff-safeguarded, flagged ratio test.
