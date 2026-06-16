@@ -240,10 +240,12 @@ function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
         @. dx = y - x
         spnorm(X, dx) >= del - safeguard && break        # on the TR boundary
 
-        # New spectral (BB) step length, then the next proximal-gradient step.
+        # Current primal model gradient, then the new spectral (BB) step length and
+        # the next proximal-gradient step. (riesz! must precede the fallback that
+        # reads spnorm(X, gmodp), so it uses the updated gmodc, not a stale value.)
+        riesz!(gmodp, X, gmodc)
         lambda = clamp((sHs <= safeguard) ? one(T) / max(spnorm(X, gmodp), eps(T)) : ss / sHs,
                        p.lambdaMin, p.lambdaMax)
-        riesz!(gmodp, X, gmodc)
         res = pgstep!(pgi, step, nobj, y, gmodp, lambda)
         countprox!(cnt, res); worst[] = max(worst[], spg_pgnorm(res, T))
         gs = apply(gmodc, step)

@@ -55,4 +55,39 @@
     @testset "subsolver validation" begin
         @test_throws ArgumentError TROptions{Float64}(subsolver=:bogus)
     end
+
+    @testset "dspg! local invariants: no worse than Cauchy, stays in TR" begin
+        # Directly drive dcauchy! then dspg! and check the two claimed invariants
+        # across random instances, envelopes, and trust-region radii.
+        cp = CauchyParams{Float64}(1e-2, 0.1, 10.0, 10, 10, 1e-8)
+        sp = SpgParams{Float64}()
+        for trial in 1:25
+            n = rand(rng, 3:6)
+            X = EuclideanSpace(Float64); Y = EuclideanSpace(Float64)
+            f = DiagonalQuadratic(rand(rng, n) .+ 0.3, randn(rng, n))
+            F = AffineMap(randn(rng, 1, n), randn(rng, 1))
+            phi = trial % 2 == 0 ? L1Objective(rand(rng, n)) : ZeroProx{Float64}()
+            A = IntervalEnvelope(0.0, 1.0)
+            psi = PsiModel(phi, A, F, X, Y, n)
+            x = randn(rng, n); reanchor!(psi, x)
+            gc = gradient(f, x); dg = similar(x); riesz!(dg, X, gc)
+            model = QuadraticModel(f, X, n); setmodel!(model, x, gc)
+            sval = value(f, x); nval = value(psi, x)
+            del = exp(randn(rng))                      # radius in ~[0.1, 10]
+            cnt = Counters()
+
+            s = zeros(n); px = zeros(n); dwa = zeros(n); dwa1 = zeros(n)
+            _, svalc, nvalc, _, _ = dcauchy!(s, model, psi, X, x, dg, del, 1.0,
+                                             sval, nval, px, dwa, dwa1, cnt, cp)
+            mC = svalc + nvalc                          # model value at the Cauchy point
+            y = x .+ s
+            gmodc = zeros(n); gmodp = zeros(n); st = zeros(n); pgi = zeros(n)
+            svals, nvals, _ = dspg!(y, model, psi, X, x, gc, del,
+                                    svalc, nvalc, gmodc, gmodp, st, pgi, dwa, px, cnt, sp)
+            mS = svals + nvals                          # model value after the improver
+
+            @test mS <= mC + 1e-10                      # never increases the model
+            @test spnorm(X, y .- x) <= del * (1 + 1e-8) # stays inside the trust region
+        end
+    end
 end
