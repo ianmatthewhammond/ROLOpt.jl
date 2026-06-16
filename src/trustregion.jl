@@ -75,7 +75,8 @@ struct TROptions{T}
     t0::T            # stationarity / prox-gradient parameter t_k
     alpha0::T        # initial Cauchy step length
     cauchy::CauchyParams{T}
-    trsafe::T        # ratio-test roundoff safeguard scale (× machine eps)
+    trsafe::T        # ratio-test roundoff safeguard scale (x machine eps)
+    step_prox_tol::T # a Cauchy step whose worst prox residual exceeds this is "gross"
     htol::T          # stop when h_k <= htol
     maxit::Int
     verbose::Int
@@ -86,11 +87,12 @@ end
 function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       gamma1=0.25, gamma3=10, t0=1, alpha0=t0,
                       mu0=1e-2, interpf=0.1, extrapf=10, redlim=10, explim=10, qtol=1e-8,
-                      trsafe=1e2, htol=1e-8, maxit=1000, verbose=0,
+                      trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}()) where {T}
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
-                 T(t0), T(alpha0), cp, T(trsafe), T(htol), Int(maxit), Int(verbose), dualspg)
+                 T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
+                 Int(maxit), Int(verbose), dualspg)
 end
 
 """
@@ -171,11 +173,11 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         end
         iter += 1
 
-        # Cauchy step (model anchored/frozen at current x). Prox reliability is
-        # tracked inside dcauchy! via cnt.nproxfail; we do not force-reject on it.
-        _, svalc, nvalc, _, _ = dcauchy!(s, model, psi, X, x, dg, delta,
-                                         opts.alpha0, sval, nval, px, dwa, dwa1,
-                                         cnt, opts.cauchy)
+        # Cauchy step (model anchored/frozen at current x). `worstpg` is the worst
+        # dual-SPG residual among the step's proxes (0 for exact proxes).
+        _, svalc, nvalc, _, worstpg = dcauchy!(s, model, psi, X, x, dg, delta,
+                                               opts.alpha0, sval, nval, px, dwa, dwa1,
+                                               cnt, opts.cauchy)
         @. xtrial = x + s
         pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
 
@@ -183,16 +185,18 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
         rho, flag = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
 
-        # Reject on: a nonpositive actual reduction or NaN (flags >= NPOSPREDPOS);
-        # or an insufficient ratio in the ordinary SUCCESS case. POSPREDNEG (actual
-        # improves though the model predicted a decrease) is accepted, matching ROL.
-        # NOTE: a step whose Cauchy prox did not reach the dual-SPG tolerance
-        # (`!stepok`) is NOT force-rejected — pRed/aRed are evaluated at the point
-        # actually reached, so rho judges it on its true merit. (Force-rejecting it
-        # caused a death spiral on hard CVaR duals that converge just shy of tol.)
-        # Prox unreliability is surfaced via Counters.nproxfail, and certified
-        # convergence still requires the h_k-defining prox to have converged (hok).
-        reject = flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
+        # Graded prox-reliability policy:
+        #  * A step whose proxes merely missed the dual-SPG tol by a little
+        #    (worstpg <= step_prox_tol) is judged on its true rho — pRed/aRed are
+        #    evaluated at the point actually reached. (Force-rejecting these caused
+        #    a death spiral on hard CVaR duals that converge just shy of tol.)
+        #  * A grossly unreliable step (worstpg > step_prox_tol) is rejected and,
+        #    being rejected, cannot grow the radius.
+        # Otherwise reject on nonpositive/NaN predicted reduction (flags >=
+        # NPOSPREDPOS) or insufficient ratio; POSPREDNEG is accepted, matching ROL.
+        # Certified convergence still requires the h_k-defining prox to converge.
+        gross = worstpg > opts.step_prox_tol
+        reject = gross || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
         if reject
             delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
                                                         # ROL uses gamma1*min(snorm,delta)

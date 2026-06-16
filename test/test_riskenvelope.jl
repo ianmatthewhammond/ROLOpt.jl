@@ -1,21 +1,22 @@
 # Risk envelopes under Euclidean and weighted (diagonal) Y metrics.
 
 # Independent support function for the convex-combination envelope, via the
-# greedy water-filling solution of  sup{ Σ pᵢ θᵢ yᵢ : Σ pᵢ θᵢ = 1, l ≤ θᵢ ≤ u }
-# (a different algorithm than the AVaR min-over-t used in the source).
-function greedy_suppA(lambda, p, probs, y)
-    l = 1 - lambda; u = (1 - lambda) + lambda / (1 - p)
+# metric-generic greedy water-filling solution of
+#   sup{ Σ wᵢ θᵢ yᵢ : Σ pᵢ θᵢ = 1, l ≤ θᵢ ≤ u },  density = wᵢyᵢ/pᵢ.
+function greedy_suppA(lambda, pq, probs, y, w)
+    l = 1 - lambda; u = (1 - lambda) + lambda / (1 - pq)
     n = length(y)
-    ord = sortperm(y; rev=true)               # largest yᵢ first
+    dens = [(w[i] * y[i]) / probs[i] for i in 1:n]
+    ord = sortperm(dens; rev=true)
     theta = fill(l, n)
-    budget = 1.0 - sum(probs .* l)            # remaining Σ pᵢ(θᵢ - l)
+    budget = 1.0 - sum(probs .* l)
     for i in ord
         add = min(u - l, budget / probs[i])
         theta[i] = l + add
         budget -= probs[i] * add
         budget <= 0 && break
     end
-    return sum(probs .* theta .* y)
+    return sum(w .* theta .* y)
 end
 
 @testset "risk envelopes" begin
@@ -54,11 +55,17 @@ end
         A = ConvexCombinationEnvelope(lambda, pq, probs)
         Yprob = WeightedSpace(probs)                 # natural Y = L²(P)
 
-        @testset "support function matches greedy water-filling" begin
+        @testset "support function is metric-generic (both Y metrics)" begin
             for _ in 1:30
                 y = randn(rng, n)
-                @test suppA(A, Yprob, y) ≈ greedy_suppA(lambda, pq, probs, y) atol=1e-9
+                # probability metric: equals (1-λ)E + λ AVaR
+                @test suppA(A, Yprob, y) ≈ greedy_suppA(lambda, pq, probs, y, probs) atol=1e-9
+                # Euclidean metric: different functional, but self-consistent
+                @test suppA(A, Xeuc, y) ≈ greedy_suppA(lambda, pq, probs, y, ones(n)) atol=1e-9
             end
+            # the two metrics genuinely differ
+            y = randn(rng, n)
+            @test !isapprox(suppA(A, Yprob, y), suppA(A, Xeuc, y); atol=1e-3)
             # theta ≡ 1 is feasible
             theta = zeros(n); initdual!(theta, A)
             @test all(theta .== 1) && sum(probs .* theta) ≈ 1

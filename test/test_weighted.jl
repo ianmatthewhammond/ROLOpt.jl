@@ -98,11 +98,16 @@ end
         f = TikhonovObjective(0.2)
         A = ConvexCombinationEnvelope(0.75, 0.9, probs)
         prob = RiskProblem(f, F, ZeroProx{Float64}(), A; Y=Yp)
-        dsg = DualSPGOptions{Float64}(tol=1e-8, maxit=400)
+        # Strict dual tol so some proxes miss it by a little (near-tolerance
+        # failures), exercising the graded prox-reliability policy.
+        dsg = DualSPGOptions{Float64}(tol=1e-10, maxit=300)
         J0 = objective_value!(zeros(Np), prob, zeros(n3))
-        res = solve(prob, zeros(n3); opts=TROptions{Float64}(maxit=300, dualspg=dsg))
+        res = solve(prob, zeros(n3); opts=TROptions{Float64}(maxit=300, step_prox_tol=1e-4, dualspg=dsg))
         @test res.J < J0                                   # objective decreased
-        @test res.hk < 1e-4                                # substantial stationarity progress
+        @test res.hk < 1e-3                                # substantial stationarity progress
         @test isapprox(indep_hstat_w(prob, res.x, 1.0), res.hk; rtol=1e-2)  # metric h_k is consistent
+        # Near-tolerance prox failures occurred but did NOT block acceptance.
+        @test res.counters.nproxfail > 0
+        @test res.counters.ngrad > 1                       # steps were accepted
     end
 end

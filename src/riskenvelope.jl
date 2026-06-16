@@ -66,10 +66,12 @@ measure with probabilities `probs` (`E[y] = Σ pᵢ yᵢ`), namely
 `A = { theta : Σ pᵢ thetaᵢ = 1, l ≤ thetaᵢ ≤ u }` with `l = 1-lambda`,
 `u = (1-lambda) + lambda/(1-p)`. The natural Y space is `WeightedSpace(probs)`.
 
-`suppA(y) = R(y)` is evaluated via `AVaR_p(y) = min_t t + 1/(1-p) Σ pᵢ (yᵢ-t)₊`.
-`projA` projects onto `A` in the Y metric `diag(w)` via the KKT shift
-`thetaᵢ = clamp(yᵢ + nu·pᵢ/wᵢ, l, u)` with `nu` the root of `Σ pᵢ thetaᵢ = 1`
-(uniform shift when `w = probs`; probability-weighted shift when `w = 1`).
+`suppA(y) = sup_{theta in A} (theta,y)_Y` is evaluated metric-generically by the
+continuous-knapsack (water-filling) solution and equals `R(y)` exactly when
+`Y = WeightedSpace(probs)`. `projA` projects onto `A` in the Y metric `diag(w)`
+via the KKT shift `thetaᵢ = clamp(yᵢ + nu·pᵢ/wᵢ, l, u)` with `nu` the root of
+`Σ pᵢ thetaᵢ = 1` (uniform shift when `w = probs`; probability-weighted when
+`w = 1`).
 """
 struct ConvexCombinationEnvelope{T,V<:AbstractVector{T}} <: RiskEnvelope{T}
     lambda::T
@@ -84,31 +86,33 @@ function ConvexCombinationEnvelope(lambda::T, p::T, probs::AbstractVector{T}) wh
     ConvexCombinationEnvelope{T,typeof(probs)}(lambda, p, probs, l, u)
 end
 
-# AVaR_p(y) = min_t [ t + 1/(1-p) Σ pᵢ (yᵢ - t)₊ ]. The piecewise-linear inner
-# objective is minimized at a breakpoint t = yᵢ, so scan the (sorted) samples.
-function _avar(A::ConvexCombinationEnvelope{T}, y) where {T}
-    p = A.probs
-    c = one(T) / (one(T) - A.p)
-    best = T(Inf)
-    @inbounds for k in eachindex(y)
-        t = y[k]
-        acc = zero(T)
-        @simd for i in eachindex(y)
-            d = y[i] - t
-            acc += p[i] * (d > zero(T) ? d : zero(T))
-        end
-        val = t + c * acc
-        best = val < best ? val : best
-    end
-    return best
-end
-
+# sigma_A(y) = max{ Σ wᵢ thetaᵢ yᵢ : Σ pᵢ thetaᵢ = 1, l ≤ thetaᵢ ≤ u } where
+# wᵢ are the Y-metric weights (1 for Euclidean). This LP over a box ∩ hyperplane
+# is a continuous knapsack: start at thetaᵢ = l, then raise thetaᵢ toward u in
+# DESCENDING order of value density dᵢ = wᵢyᵢ/pᵢ until the budget Σ pᵢ thetaᵢ = 1
+# is met (always feasible since the box capacity u-l = lambda/(1-p) ≥ lambda = 1-l).
+# For Y = WeightedSpace(probs) this equals (1-lambda)E[y] + lambda·AVaR_p[y].
 function suppA(A::ConvexCombinationEnvelope{T}, Y::HilbertSpace, y) where {T}
-    Ey = zero(T)
-    @inbounds @simd for i in eachindex(y)
-        Ey += A.probs[i] * y[i]
+    p = A.probs; l = A.l; u = A.u
+    w = proxweights(Y)
+    n = length(y)
+    val = zero(T); budget = one(T) - l            # budget = 1 - Σ pᵢ l = 1 - l
+    dens = Vector{T}(undef, n)
+    @inbounds for i in 1:n
+        wi = w === nothing ? one(T) : w[i]
+        val += wi * l * y[i]
+        dens[i] = (wi * y[i]) / p[i]
     end
-    return (one(T) - A.lambda) * Ey + A.lambda * _avar(A, y)
+    ord = sortperm(dens; rev=true)
+    cap = u - l
+    @inbounds for i in ord
+        budget <= zero(T) && break
+        wi = w === nothing ? one(T) : w[i]
+        delta = min(cap, budget / p[i])
+        val += wi * delta * y[i]
+        budget -= p[i] * delta
+    end
+    return val
 end
 
 function project!(out, A::ConvexCombinationEnvelope{T}, Y::HilbertSpace, y) where {T}

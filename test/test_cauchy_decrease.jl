@@ -28,11 +28,11 @@
         step = zeros(n); pg = zeros(n)
         hk, hok = hstat!(step, pg, psi, X, x, dg, t0, cnt)
         s = zeros(n); px = zeros(n); dwa = zeros(n); dwa1 = zeros(n)
-        _, svalc, nvalc, _, okc = dcauchy!(s, model, psi, X, x, dg, del, t0,
-                                           sval, nval, px, dwa, dwa1, cnt, cp)
+        _, svalc, nvalc, _, worstpg = dcauchy!(s, model, psi, X, x, dg, del, t0,
+                                               sval, nval, px, dwa, dwa1, cnt, cp)
         pred = (sval + nval) - (svalc + nvalc)
         bound = hk * min(hk / (1 + normB), del)
-        @test hok && okc
+        @test hok && worstpg < 1e-6     # h_k prox and all Cauchy proxes are accurate
         @test pred > 0
         @test pred >= 0.1 * bound
     end

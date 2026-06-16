@@ -9,13 +9,17 @@
     prob = RiskProblem(f, F, phi, A)
     xstar = fill(-1 / 6, n)
 
-    @testset "failed Algorithm 2 prox is not certified as converged" begin
-        # Starve the dual SPG so every prox hits its iteration cap.
+    @testset "grossly failed prox (maxit=0) is rejected, not treated as progress" begin
+        # Starve the dual SPG so every prox is grossly unreliable (pgnorm = Inf).
         bad = DualSPGOptions{Float64}(maxit=0)
+        J0 = objective_value!(zeros(1), prob, zeros(n))
         res = solve(prob, zeros(n); opts=TROptions{Float64}(maxit=50, dualspg=bad))
         @test !res.converged
         @test res.status == :prox_failure
         @test res.counters.nproxfail > 0
+        # Gross steps are rejected: no spurious objective improvement, x unmoved.
+        @test res.J ≈ J0 atol=1e-10
+        @test norm(res.x) < 1e-10
     end
 
     @testset "t0 != 1 still converges to the solution" begin

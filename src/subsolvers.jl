@@ -25,6 +25,10 @@ spg_iters(r::DualSPGResult) = r.iters
 spg_iters(::Any) = 0
 spg_ok(r::DualSPGResult) = r.converged
 spg_ok(::Any) = true
+# Final dual projected-gradient residual (0 for an exact ProxObjective prox).
+spg_pgnorm(r::DualSPGResult{T}) where {T} = r.pgnorm
+spg_pgnorm(::Any, ::Type{T}) where {T} = zero(T)
+spg_pgnorm(r::DualSPGResult, ::Type{T}) where {T} = T(r.pgnorm)
 
 # Record a prox result in the counters; returns whether it converged.
 @inline function countprox!(cnt::Counters, res)
@@ -68,8 +72,10 @@ Cauchy point for the TR subproblem `min q_k(x_k+s) + psi_k(x_k+s)` s.t. ‖s‖ 
 via a bidirectional proximal search on the step length `alpha`. Writes the Cauchy
 step into `s` (and the trial iterate `x_k+s` into `px`). `sval0 = f(x_k)`,
 `nval0 = psi_k(x_k)`; returned `sval`/`nval` are the model smooth/nonsmooth values
-at the Cauchy point, so `pred = (sval0+nval0) - (sval+nval)`. `ok` is false if any
-prox during the search failed to converge (the step is then unreliable).
+at the Cauchy point, so `pred = (sval0+nval0) - (sval+nval)`. The last return,
+`worst_pgnorm`, is the largest dual-SPG residual over all proxes used here (0 for
+exact proxes); the caller treats a step with `worst_pgnorm > step_prox_tol` as
+grossly unreliable.
 
 Port of ROL `TrustRegionAlgorithm::dcauchy`.
 """
@@ -78,12 +84,21 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     half = T(1) / 2
     sold = sval0
     nold = nval0
-    nfail0 = cnt.nproxfail
+    worst = Ref(zero(T))            # worst dual-SPG residual over all proxes here
+
+    # One proximal-gradient step; counts it and tracks the worst prox residual.
+    function pgs(alpha)
+        res = pgstep!(px, s, nobj, x, dg, alpha)
+        countprox!(cnt, res)
+        w = spg_pgnorm(res, T)
+        worst[] = max(worst[], w)
+        return res
+    end
 
     # Evaluate the model decrease at step length `alpha`. Writes s, px; returns
     # (sval, nval, pRed, Qk, snorm).
     function trystep(alpha)
-        res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
+        pgs(alpha)
         snorm = spnorm(X, s)
         modelhessvec!(dwa, model, s); cnt.nhess += 1
         nval = value(nobj, px); cnt.npsi += 1
@@ -95,7 +110,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     end
 
     # Initial step
-    res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
+    pgs(alpha)
     snorm = spnorm(X, s)
     sval = sold; nval = nold; pRed = zero(T); Qk = zero(T)
     interp = snorm > del
@@ -109,7 +124,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
         search = true
         while search
             alpha *= p.interpf
-            res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
+            pgs(alpha)
             snorm = spnorm(X, s)
             if snorm <= del
                 sval, nval, pRed, Qk, snorm = trystep(alpha)
@@ -123,7 +138,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
         search = true
         while search
             alpha *= p.extrapf
-            res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
+            pgs(alpha)
             snorm = spnorm(X, s)
             if snorm <= del && cnt_steps < p.explim
                 sval, nval, pRed, Qk, snorm = trystep(alpha)
@@ -142,12 +157,11 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     end
 
     # Finalize at the chosen alpha so s, px, sval, nval are mutually consistent.
-    res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
+    pgs(alpha)
     snorm = spnorm(X, s)
     modelhessvec!(dwa, model, s); cnt.nhess += 1
     nval = value(nobj, px); cnt.npsi += 1
     gs = inner(X, s, dg)
     sval = sold + gs + half * apply(dwa, s)
-    ok = cnt.nproxfail == nfail0
-    return alpha, sval, nval, snorm, ok
+    return alpha, sval, nval, snorm, worst[]
 end
