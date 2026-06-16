@@ -13,8 +13,8 @@
         end
         @test bound(A) == 1.0
         # initial dual must be feasible
-        θ = [99.0]; initdual!(θ, A)
-        @test 0.0 <= θ[1] <= 1.0
+        theta = [99.0]; initdual!(theta, A)
+        @test 0.0 <= theta[1] <= 1.0
     end
 
     @testset "[a,b]^n box: suppA = Σ max(a yᵢ, b yᵢ)" begin

@@ -80,9 +80,9 @@ abstract type VectorMap{T<:Real} end
 
 value!(b, F::VectorMap, x) = throw(MethodError(value!, (b, F, x)))
 applyJacobian!(out, F::VectorMap, v, x) = throw(MethodError(applyJacobian!, (out, F, v, x)))
-applyAdjointJacobian!(out, F::VectorMap, θ, x) = throw(MethodError(applyAdjointJacobian!, (out, F, θ, x)))
-# (θ, F''(x) v) — Phase 2 curvature term; Phase 1 must never call it.
-applyAdjointHessian!(out, F::VectorMap, θ, v, x) = throw(MethodError(applyAdjointHessian!, (out, F, θ, v, x)))
+applyAdjointJacobian!(out, F::VectorMap, theta, x) = throw(MethodError(applyAdjointJacobian!, (out, F, theta, x)))
+# (theta, F''(x) v) — Phase 2 curvature term; Phase 1 must never call it.
+applyAdjointHessian!(out, F::VectorMap, theta, v, x) = throw(MethodError(applyAdjointHessian!, (out, F, theta, v, x)))
 
 """rangedim(F): dimension of the output space Y."""
 rangedim(F::VectorMap) = throw(MethodError(rangedim, (F,)))
@@ -101,15 +101,15 @@ end
 rangedim(F::AffineMap) = length(F.c)
 value!(b, F::AffineMap, x) = (mul!(b, F.A, x); b .+= F.c; b)
 applyJacobian!(out, F::AffineMap, v, x) = (mul!(out, F.A, v); out)
-applyAdjointJacobian!(out, F::AffineMap, θ, x) = (mul!(out, transpose(F.A), θ); out)
-applyAdjointHessian!(out, F::AffineMap, θ, v, x) = fill!(out, zero(eltype(out)))
+applyAdjointJacobian!(out, F::AffineMap, theta, x) = (mul!(out, transpose(F.A), theta); out)
+applyAdjointHessian!(out, F::AffineMap, theta, v, x) = fill!(out, zero(eltype(out)))
 
 """
     QuadraticMap(Q, a, c)
 
 Per output `j`: `Fⱼ(x) = ½ xᵀ Qⱼ x + aⱼᵀ x + cⱼ`, where `Q` is a vector of
 symmetric matrices, `a` is `m×n` (row `j` = `aⱼᵀ`), `c ∈ ℝᵐ`.
-`F'(x)` has rows `(Qⱼ x + aⱼ)ᵀ`; `(θ, F'' v) = Σⱼ θⱼ Qⱼ v`.
+`F'(x)` has rows `(Qⱼ x + aⱼ)ᵀ`; `(theta, F'' v) = Σⱼ thetaⱼ Qⱼ v`.
 """
 struct QuadraticMap{T,MQ<:AbstractMatrix{T},MA<:AbstractMatrix{T},V<:AbstractVector{T}} <: VectorMap{T}
     Q::Vector{MQ}
@@ -132,24 +132,24 @@ function applyJacobian!(out, F::QuadraticMap{T}, v, x) where {T}
     end
     return out
 end
-function applyAdjointJacobian!(out, F::QuadraticMap{T}, θ, x) where {T}
+function applyAdjointJacobian!(out, F::QuadraticMap{T}, theta, x) where {T}
     fill!(out, zero(T))
     tmp = similar(out)
     @inbounds for j in eachindex(F.c)
-        θj = θ[j]                      # hoist scalar (avoid broadcast getindex under @.)
+        thetaj = theta[j]                      # hoist scalar (avoid broadcast getindex under @.)
         mul!(tmp, F.Q[j], x)          # Qⱼ x
         aj = view(F.a, j, :)
-        @. out += θj * (tmp + aj)
+        @. out += thetaj * (tmp + aj)
     end
     return out
 end
-function applyAdjointHessian!(out, F::QuadraticMap{T}, θ, v, x) where {T}
+function applyAdjointHessian!(out, F::QuadraticMap{T}, theta, v, x) where {T}
     fill!(out, zero(T))
     tmp = similar(out)
     @inbounds for j in eachindex(F.c)
-        θj = θ[j]
+        thetaj = theta[j]
         mul!(tmp, F.Q[j], v)          # Qⱼ v
-        @. out += θj * tmp
+        @. out += thetaj * tmp
     end
     return out
 end
@@ -159,9 +159,9 @@ end
 # ----------------------------------------------------------------------------
 abstract type ProxObjective{T<:Real} end
 
-value(φ::ProxObjective, x) = throw(MethodError(value, (φ, x)))
-prox!(out, φ::ProxObjective, z, t) = throw(MethodError(prox!, (out, φ, z, t)))
-prox(φ::ProxObjective, z, t) = prox!(similar(z), φ, z, t)
+value(phi::ProxObjective, x) = throw(MethodError(value, (phi, x)))
+prox!(out, phi::ProxObjective, z, t) = throw(MethodError(prox!, (out, phi, z, t)))
+prox(phi::ProxObjective, z, t) = prox!(similar(z), phi, z, t)
 
 @inline _soft(u, k) = u - clamp(u, -k, k)   # soft-threshold: sign(u)·max(|u|-k,0)
 
@@ -182,15 +182,15 @@ struct L1Objective{T,V<:AbstractVector{T}} <: ProxObjective{T}
     shift::V
 end
 L1Objective(w::AbstractVector{T}) where {T} = L1Objective{T,typeof(w)}(w, zero(w))
-function value(φ::L1Objective{T}, x) where {T}
+function value(phi::L1Objective{T}, x) where {T}
     s = zero(T)
     @inbounds @simd for i in eachindex(x)
-        s += φ.w[i] * abs(x[i] - φ.shift[i])
+        s += phi.w[i] * abs(x[i] - phi.shift[i])
     end
     return s
 end
-function prox!(out, φ::L1Objective, z, t)
-    @. out = z - clamp(z - φ.shift, -t * φ.w, t * φ.w)
+function prox!(out, phi::L1Objective, z, t)
+    @. out = z - clamp(z - phi.shift, -t * phi.w, t * phi.w)
     return out
 end
 
@@ -204,18 +204,18 @@ struct BoundConstraint{T,V<:AbstractVector{T}} <: ProxObjective{T}
     lo::V
     hi::V
 end
-function value(φ::BoundConstraint{T}, x) where {T}
+function value(phi::BoundConstraint{T}, x) where {T}
     @inbounds for i in eachindex(x)
-        (x[i] < φ.lo[i] || x[i] > φ.hi[i]) && return T(Inf)
+        (x[i] < phi.lo[i] || x[i] > phi.hi[i]) && return T(Inf)
     end
     return zero(T)
 end
-prox!(out, φ::BoundConstraint, z, t) = (@. out = clamp(z, φ.lo, φ.hi); out)
+prox!(out, phi::BoundConstraint, z, t) = (@. out = clamp(z, phi.lo, phi.hi); out)
 
 """
     BoxL1Objective(weights, lo, hi[, shift])
 
-`phi(x) = Σ wᵢ |xᵢ - shiftᵢ| + ι_[lo,hi](x)` (the paper's sparse-control φ).
+`phi(x) = Σ wᵢ |xᵢ - shiftᵢ| + ι_[lo,hi](x)` (the paper's sparse-control phi).
 Separable, so the prox is the proven closed form
 `prox(z)ᵢ = clamp(zᵢ - clamp(zᵢ - shiftᵢ, -t wᵢ, t wᵢ), loᵢ, hiᵢ)`
 (soft-threshold then clamp) — NOT a generic composition of proxes.
@@ -228,15 +228,15 @@ struct BoxL1Objective{T,V<:AbstractVector{T}} <: ProxObjective{T}
 end
 BoxL1Objective(w::V, lo::V, hi::V) where {T,V<:AbstractVector{T}} =
     BoxL1Objective{T,V}(w, lo, hi, zero(w))
-function value(φ::BoxL1Objective{T}, x) where {T}
+function value(phi::BoxL1Objective{T}, x) where {T}
     s = zero(T)
     @inbounds for i in eachindex(x)
-        (x[i] < φ.lo[i] || x[i] > φ.hi[i]) && return T(Inf)
-        s += φ.w[i] * abs(x[i] - φ.shift[i])
+        (x[i] < phi.lo[i] || x[i] > phi.hi[i]) && return T(Inf)
+        s += phi.w[i] * abs(x[i] - phi.shift[i])
     end
     return s
 end
-function prox!(out, φ::BoxL1Objective, z, t)
-    @. out = clamp(φ.shift + _soft(z - φ.shift, t * φ.w), φ.lo, φ.hi)
+function prox!(out, phi::BoxL1Objective, z, t)
+    @. out = clamp(phi.shift + _soft(z - phi.shift, t * phi.w), phi.lo, phi.hi)
     return out
 end

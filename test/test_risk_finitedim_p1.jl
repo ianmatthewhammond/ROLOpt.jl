@@ -14,9 +14,9 @@ CountingMap(F::VectorMap{T}) where {T} = CountingMap{T,typeof(F)}(F, Ref(0))
 ROLOpt.rangedim(C::CountingMap) = rangedim(C.F)
 ROLOpt.value!(b, C::CountingMap, x) = value!(b, C.F, x)
 ROLOpt.applyJacobian!(o, C::CountingMap, v, x) = applyJacobian!(o, C.F, v, x)
-ROLOpt.applyAdjointJacobian!(o, C::CountingMap, θ, x) = applyAdjointJacobian!(o, C.F, θ, x)
-ROLOpt.applyAdjointHessian!(o, C::CountingMap, θ, v, x) =
-    (C.nhess[] += 1; applyAdjointHessian!(o, C.F, θ, v, x))
+ROLOpt.applyAdjointJacobian!(o, C::CountingMap, theta, x) = applyAdjointJacobian!(o, C.F, theta, x)
+ROLOpt.applyAdjointHessian!(o, C::CountingMap, theta, v, x) =
+    (C.nhess[] += 1; applyAdjointHessian!(o, C.F, theta, v, x))
 
 # Independent stationarity residual h(x) = ||prox_{t0 psi_x}(x - t0 ∇f(x)) - x||/t0,
 # built from scratch (fresh PsiModel) at the candidate x.

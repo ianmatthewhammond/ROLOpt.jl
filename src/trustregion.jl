@@ -29,21 +29,38 @@ struct CauchyParams{T}
     mu0::T; interpf::T; extrapf::T; redlim::Int; explim::Int; qtol::T
 end
 
-# Ratio of actual to predicted reduction with a roundoff safeguard. Port of
-# ROL `TRUtils::analyzeRatio`: adds eps = epsi·max(1,|fold|) to both reductions
-# so that when both are at the roundoff floor we declare rho = 1 (success),
-# preventing near-solution stagnation from catastrophic cancellation in pRed.
+# Trust-region ratio flags (ROL TRUtils::ETRFlag values).
+const TR_SUCCESS    = 0   # both reductions positive (or roundoff-floor success)
+const TR_POSPREDNEG = 1   # actual > 0, predicted < 0 (accept the good step)
+const TR_NPOSPREDPOS = 2  # actual <= 0, predicted > 0 (reject)
+const TR_NPOSPREDNEG = 3  # actual <= 0, predicted < 0 (reject)
+const TR_NAN        = 4   # NaN reduction (reject)
+
+# Ratio of actual to predicted reduction with a roundoff safeguard, returning
+# (rho, flag). Port of ROL `TRUtils::analyzeRatio`: adds eps = epsi·max(1,|fold|)
+# to both reductions so that when both are at the roundoff floor we declare
+# rho = 1 (SUCCESS), preventing near-solution stagnation from catastrophic
+# cancellation in pRed; flags nonpositive/NaN reductions so the caller rejects
+# (important when a failed prox produces a meaningless predicted reduction).
 function analyze_ratio(fold::T, ftrial::T, pRed::T, epsi::T) where {T}
     eps = epsi * max(one(T), abs(fold))
     aRed = fold - ftrial
     aRed_safe = aRed + eps
     pRed_safe = pRed + eps
     if ((abs(aRed_safe) < epsi && abs(pRed_safe) < epsi) || aRed == pRed)
-        return one(T)
+        return one(T), TR_SUCCESS
     elseif isnan(aRed_safe) || isnan(pRed_safe)
-        return -one(T)
+        return -one(T), TR_NAN
+    end
+    rho = aRed_safe / pRed_safe
+    if pRed_safe < zero(T) && aRed_safe > zero(T)
+        return rho, TR_POSPREDNEG
+    elseif aRed_safe <= zero(T) && pRed_safe > zero(T)
+        return rho, TR_NPOSPREDPOS
+    elseif aRed_safe <= zero(T) && pRed_safe < zero(T)
+        return rho, TR_NPOSPREDNEG
     else
-        return aRed_safe / pRed_safe
+        return rho, TR_SUCCESS
     end
 end
 
@@ -64,8 +81,10 @@ struct TROptions{T}
     verbose::Int
     dualspg::DualSPGOptions{T}
 end
+# Note `alpha0` defaults to `t0`: per the Phase-1 rule the Cauchy bidirectional
+# search starts from the same prox-gradient parameter `t0` used for h_k.
 function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
-                      gamma1=0.25, gamma3=10, t0=1, alpha0=1,
+                      gamma1=0.25, gamma3=10, t0=1, alpha0=t0,
                       mu0=1e-2, interpf=0.1, extrapf=10, redlim=10, explim=10, qtol=1e-8,
                       trsafe=1e2, htol=1e-8, maxit=1000, verbose=0,
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}()) where {T}
@@ -74,13 +93,19 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                  T(t0), T(alpha0), cp, T(trsafe), T(htol), Int(maxit), Int(verbose), dualspg)
 end
 
-"""Result of `solve`."""
+"""
+Result of `solve`. `converged` is true only when `h_k <= htol` AND the prox that
+produced that `h_k` itself converged. `status` is one of `:converged`,
+`:prox_failure` (the stationarity prox hit its iteration cap, so `h_k` is
+unreliable), or `:maxiter`.
+"""
 struct TRResult{T,V}
     x::V
     J::T
     hk::T
     iters::Int
     converged::Bool
+    status::Symbol
     counters::Counters
 end
 
@@ -130,7 +155,7 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     gradient!(gcoord, prob.f, x); cnt.ngrad += 1
     riesz!(dg, X, gcoord)
     setmodel!(model, x, gcoord)
-    hk = hstat!(step, pgiter, psi, X, x, dg, opts.t0); cnt.nprox += 1
+    hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
     delta = opts.delta0 > 0 ? opts.delta0 : spnorm(X, dg)
 
     opts.verbose > 0 && _print_header()
@@ -139,25 +164,30 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     converged = false
     iter = 0
     while iter < opts.maxit
-        if hk <= opts.htol
+        # Certified convergence requires the h_k-defining prox to have converged.
+        if hk <= opts.htol && hok
             converged = true
             break
         end
         iter += 1
 
         # Cauchy step (model anchored/frozen at current x)
-        alpha, svalc, nvalc, snorm = dcauchy!(s, model, psi, X, x, dg, delta,
-                                               opts.alpha0, sval, nval, px, dwa, dwa1,
-                                               cnt, opts.cauchy)
+        _, svalc, nvalc, _, stepok = dcauchy!(s, model, psi, X, x, dg, delta,
+                                              opts.alpha0, sval, nval, px, dwa, dwa1,
+                                              cnt, opts.cauchy)
         @. xtrial = x + s
         pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
 
-        # True actual reduction, with ROL's roundoff-safeguarded ratio test
+        # True actual reduction, with ROL's roundoff-safeguarded, flagged ratio test.
         Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
-        rho = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
+        rho, flag = analyze_ratio(Jval, Jtrial, pRed, opts.trsafe * eps(T))
 
-        if rho < opts.eta1                              # reject
-            delta = opts.gamma1 * min(snorm, delta)
+        # Reject on: an unreliable step (a prox failed), a nonpositive/NaN
+        # predicted reduction, or an insufficient ratio. Otherwise accept.
+        reject = !stepok || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
+        if reject
+            delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
+                                                        # ROL uses gamma1*min(snorm,delta)
         else                                            # accept
             copyto!(x, xtrial)
             Jval = Jtrial
@@ -168,7 +198,7 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
             gradient!(gcoord, prob.f, x); cnt.ngrad += 1
             riesz!(dg, X, gcoord)
             setmodel!(model, x, gcoord)
-            hk = hstat!(step, pgiter, psi, X, x, dg, opts.t0); cnt.nprox += 1
+            hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
             if rho >= opts.eta2
                 delta = min(opts.gamma3 * delta, opts.deltamax)
             end
@@ -177,7 +207,8 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
     end
 
-    return TRResult{T,Vector{T}}(x, Jval, hk, iter, converged, cnt)
+    status = converged ? :converged : (hok ? :maxiter : :prox_failure)
+    return TRResult{T,Vector{T}}(x, Jval, hk, iter, converged, status, cnt)
 end
 
 function _print_header()

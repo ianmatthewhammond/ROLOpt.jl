@@ -8,11 +8,11 @@
 # Independent dual objective d(theta) for an AffineMap F (Euclidean spaces):
 #   p(theta) = prox_{t phi}(z - t A' theta)
 #   d(theta) = 1/(2t)||p-z||^2 + phi(p) + theta . (A (p - xk) + b_k)
-function _indep_dual(F::AffineMap, phi, xk, z, t, θ)
+function _indep_dual(F::AffineMap, phi, xk, z, t, theta)
     bk = F.A * xk + F.c
-    p = prox(phi, z - t * (F.A' * θ), t)
+    p = prox(phi, z - t * (F.A' * theta), t)
     ell = F.A * (p - xk) + bk
-    d = dot(p - z, p - z) / (2t) + value(phi, p) + dot(θ, ell)
+    d = dot(p - z, p - z) / (2t) + value(phi, p) + dot(theta, ell)
     return d, p, ell
 end
 
@@ -35,7 +35,7 @@ end
             @test res.converged
 
             # Independent 1-D maximizer of d over [0,1] (golden section).
-            obj(θ1) = _indep_dual(F, phi, xk, z, t, [θ1])[1]
+            obj(theta1) = _indep_dual(F, phi, xk, z, t, [theta1])[1]
             lo, hi = 0.0, 1.0
             gr = (sqrt(5) - 1) / 2
             c1 = hi - gr * (hi - lo); c2 = lo + gr * (hi - lo)
@@ -49,10 +49,10 @@ end
                     c1 = hi - gr * (hi - lo); f1 = obj(c1)
                 end
             end
-            θstar = (lo + hi) / 2
-            _, pstar, _ = _indep_dual(F, phi, xk, z, t, [θstar])
+            thetastar = (lo + hi) / 2
+            _, pstar, _ = _indep_dual(F, phi, xk, z, t, [thetastar])
 
-            @test isapprox(res.theta[1], θstar; atol=1e-5)
+            @test isapprox(res.theta[1], thetastar; atol=1e-5)
             @test isapprox(out, pstar; atol=1e-6)
 
             # Primal-dual residual: theta_bar fixed under projected ascent.
@@ -75,13 +75,13 @@ end
         @test res.converged
 
         # Independent dense-grid maximizer over [0,1]^2.
-        best = -Inf; θbest = [0.0, 0.0]
+        best = -Inf; thetabest = [0.0, 0.0]
         gridvals = range(0.0, 1.0; length=151)
         for t1 in gridvals, t2 in gridvals
             d, _, _ = _indep_dual(F, phi, xk, z, t, [t1, t2])
-            if d > best; best = d; θbest = [t1, t2]; end
+            if d > best; best = d; thetabest = [t1, t2]; end
         end
-        @test isapprox(res.theta, θbest; atol=2e-2)   # grid resolution ~1/150
+        @test isapprox(res.theta, thetabest; atol=2e-2)   # grid resolution ~1/150
         _, pbest, _ = _indep_dual(F, phi, xk, z, t, res.theta)
         @test isapprox(out, pbest; atol=1e-8)
     end

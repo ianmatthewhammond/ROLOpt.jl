@@ -7,20 +7,33 @@
 
 """Evaluation counters (columns mirror the paper's result tables)."""
 mutable struct Counters
-    nfval::Int   # evaluations of the (f, F) pair
-    ngrad::Int   # gradient computations
-    nhess::Int   # model Hessian applications
-    npsi::Int    # evaluations of psi_k
-    nprox::Int   # prox_{t psi_k} evaluations
-    nspg::Int    # total dual spectral-projected-gradient iterations (for averaging)
+    nfval::Int     # evaluations of the (f, F) pair
+    ngrad::Int     # gradient computations
+    nhess::Int     # model Hessian applications
+    npsi::Int      # evaluations of psi_k
+    nprox::Int     # prox_{t psi_k} evaluations
+    nspg::Int      # total dual spectral-projected-gradient iterations (for averaging)
+    nproxfail::Int # prox_{t psi_k} evaluations that did NOT converge
 end
-Counters() = Counters(0, 0, 0, 0, 0, 0)
+Counters() = Counters(0, 0, 0, 0, 0, 0, 0)
 
 # nobj is the nonsmooth term (a PsiModel or a ProxObjective). prox! returns a
-# DualSPGResult for PsiModel; the .iters field feeds the nspg average. For a plain
-# ProxObjective prox! returns the output vector, so spg_iters(...) reports 0.
+# DualSPGResult for PsiModel; the .iters / .converged fields feed the counters
+# and failure tracking. For a plain ProxObjective prox! returns the output
+# vector (always "converged", 0 inner iterations).
 spg_iters(r::DualSPGResult) = r.iters
 spg_iters(::Any) = 0
+spg_ok(r::DualSPGResult) = r.converged
+spg_ok(::Any) = true
+
+# Record a prox result in the counters; returns whether it converged.
+@inline function countprox!(cnt::Counters, res)
+    cnt.nprox += 1
+    cnt.nspg += spg_iters(res)
+    ok = spg_ok(res)
+    ok || (cnt.nproxfail += 1)
+    return ok
+end
 
 """
     pgstep!(pgiter, step, nobj, x, dg, t) -> res
@@ -36,23 +49,27 @@ function pgstep!(pgiter, step, nobj, x, dg, t)
 end
 
 """
-    hstat!(step, pgiter, nobj, X, x, dg, t0) -> h_k
+    hstat!(step, pgiter, nobj, X, x, dg, t0, cnt) -> (h_k, ok)
 
-Stationarity metric `h_k = ‖prox_{t0·nobj}(x - t0·dg) - x‖_X / t0`.
+Stationarity metric `h_k = ‖prox_{t0·nobj}(x - t0·dg) - x‖_X / t0`. Records the
+prox in `cnt` and returns whether the (dual-SPG) prox converged; `h_k` is
+unreliable when `ok` is false.
 """
-function hstat!(step, pgiter, nobj, X::HilbertSpace, x, dg, t0)
-    pgstep!(pgiter, step, nobj, x, dg, t0)
-    return spnorm(X, step) / t0
+function hstat!(step, pgiter, nobj, X::HilbertSpace, x, dg, t0, cnt::Counters)
+    res = pgstep!(pgiter, step, nobj, x, dg, t0)
+    ok = countprox!(cnt, res)
+    return spnorm(X, step) / t0, ok
 end
 
 """
-    dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm)
+    dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm, ok)
 
 Cauchy point for the TR subproblem `min q_k(x_k+s) + psi_k(x_k+s)` s.t. ‖s‖ ≤ del,
 via a bidirectional proximal search on the step length `alpha`. Writes the Cauchy
 step into `s` (and the trial iterate `x_k+s` into `px`). `sval0 = f(x_k)`,
 `nval0 = psi_k(x_k)`; returned `sval`/`nval` are the model smooth/nonsmooth values
-at the Cauchy point, so `pred = (sval0+nval0) - (sval+nval)`.
+at the Cauchy point, so `pred = (sval0+nval0) - (sval+nval)`. `ok` is false if any
+prox during the search failed to converge (the step is then unreliable).
 
 Port of ROL `TrustRegionAlgorithm::dcauchy`.
 """
@@ -61,12 +78,12 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     half = T(1) / 2
     sold = sval0
     nold = nval0
+    nfail0 = cnt.nproxfail
 
     # Evaluate the model decrease at step length `alpha`. Writes s, px; returns
     # (sval, nval, pRed, Qk, snorm).
     function trystep(alpha)
-        res = pgstep!(px, s, nobj, x, dg, alpha)
-        cnt.nprox += 1; cnt.nspg += spg_iters(res)
+        res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
         snorm = spnorm(X, s)
         modelhessvec!(dwa, model, s); cnt.nhess += 1
         nval = value(nobj, px); cnt.npsi += 1
@@ -78,8 +95,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     end
 
     # Initial step
-    res = pgstep!(px, s, nobj, x, dg, alpha)
-    cnt.nprox += 1; cnt.nspg += spg_iters(res)
+    res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
     snorm = spnorm(X, s)
     sval = sold; nval = nold; pRed = zero(T); Qk = zero(T)
     interp = snorm > del
@@ -93,8 +109,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
         search = true
         while search
             alpha *= p.interpf
-            res = pgstep!(px, s, nobj, x, dg, alpha)
-            cnt.nprox += 1; cnt.nspg += spg_iters(res)
+            res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
             snorm = spnorm(X, s)
             if snorm <= del
                 sval, nval, pRed, Qk, snorm = trystep(alpha)
@@ -108,8 +123,7 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
         search = true
         while search
             alpha *= p.extrapf
-            res = pgstep!(px, s, nobj, x, dg, alpha)
-            cnt.nprox += 1; cnt.nspg += spg_iters(res)
+            res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
             snorm = spnorm(X, s)
             if snorm <= del && cnt_steps < p.explim
                 sval, nval, pRed, Qk, snorm = trystep(alpha)
@@ -128,12 +142,12 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     end
 
     # Finalize at the chosen alpha so s, px, sval, nval are mutually consistent.
-    res = pgstep!(px, s, nobj, x, dg, alpha)
-    cnt.nprox += 1; cnt.nspg += spg_iters(res)
+    res = pgstep!(px, s, nobj, x, dg, alpha); countprox!(cnt, res)
     snorm = spnorm(X, s)
     modelhessvec!(dwa, model, s); cnt.nhess += 1
     nval = value(nobj, px); cnt.npsi += 1
     gs = inner(X, s, dg)
     sval = sold + gs + half * apply(dwa, s)
-    return alpha, sval, nval, snorm
+    ok = cnt.nproxfail == nfail0
+    return alpha, sval, nval, snorm, ok
 end

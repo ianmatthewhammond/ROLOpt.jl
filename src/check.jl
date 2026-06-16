@@ -78,17 +78,17 @@ function check_jacobian(F::VectorMap{T}, x, v) where {T}
 end
 
 """
-    check_adjoint(F, x, v, θ) -> err
+    check_adjoint(F, x, v, theta) -> err
 
-Verifies the adjoint (transpose) identity `⟨F'(x) v, θ⟩ = ⟨v, F'(x)* θ⟩`
+Verifies the adjoint (transpose) identity `⟨F'(x) v, theta⟩ = ⟨v, F'(x)* theta⟩`
 (metric-free coordinate pairing).
 """
-function check_adjoint(F::VectorMap{T}, x, v, θ) where {T}
+function check_adjoint(F::VectorMap{T}, x, v, theta) where {T}
     Jv = Vector{T}(undef, rangedim(F))
     applyJacobian!(Jv, F, v, x)
-    Jaθ = similar(x)
-    applyAdjointJacobian!(Jaθ, F, θ, x)
-    return abs(dot(Jv, θ) - dot(v, Jaθ))
+    Jatheta = similar(x)
+    applyAdjointJacobian!(Jatheta, F, theta, x)
+    return abs(dot(Jv, theta) - dot(v, Jatheta))
 end
 
 """

@@ -24,10 +24,10 @@
         Q = [let M = randn(rng, n, n); M'M end for _ in 1:m]
         amat = randn(rng, m, n); cq = randn(rng, m)
         F_quad = QuadraticMap(Q, amat, cq)
-        θ = randn(rng, m)
+        theta = randn(rng, m)
         for F in (F_aff, F_quad)
             @test check_jacobian(F, x, v) < 1e-8
-            @test check_adjoint(F, x, v, θ) < 1e-10
+            @test check_adjoint(F, x, v, theta) < 1e-10
         end
     end
 end

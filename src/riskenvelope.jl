@@ -1,6 +1,6 @@
 # Risk envelope A ⊂ Y: nonempty, closed, convex, bounded. Provides the support
-# function suppA(y) = sup_{θ∈A} (θ,y)_Y, the metric projection projA(y), the
-# bound MA = sup_{θ∈A} ‖θ‖_Y, and a feasible starting dual.
+# function suppA(y) = sup_{theta∈A} (theta,y)_Y, the metric projection projA(y), the
+# bound MA = sup_{theta∈A} ‖theta‖_Y, and a feasible starting dual.
 #
 # These are exactly the operations the paper's risk term needs:
 #   * suppA  -> the nonsmooth value σ_A(F(x)) and the model value σ_A(ℓ_k(x))
@@ -15,7 +15,7 @@ abstract type RiskEnvelope{T<:Real} end
 suppA(A::RiskEnvelope, y) = throw(MethodError(suppA, (A, y)))
 project!(out, A::RiskEnvelope, y) = throw(MethodError(project!, (out, A, y)))
 bound(A::RiskEnvelope) = throw(MethodError(bound, (A,)))
-initdual!(θ, A::RiskEnvelope) = throw(MethodError(initdual!, (θ, A)))
+initdual!(theta, A::RiskEnvelope) = throw(MethodError(initdual!, (theta, A)))
 
 projectdual(A::RiskEnvelope, y) = project!(similar(y), A, y)
 
@@ -44,5 +44,5 @@ function suppA(A::IntervalEnvelope{T}, y) where {T}
 end
 project!(out, A::IntervalEnvelope, y) = (@. out = clamp(y, A.a, A.b); out)
 bound(A::IntervalEnvelope{T}) where {T} = sqrt(T(A.n)) * max(abs(A.a), abs(A.b))
-# Feasible starting dual: the component of A closest to 0 (a valid θ ∈ A).
-initdual!(θ, A::IntervalEnvelope) = (fill!(θ, clamp(zero(eltype(θ)), A.a, A.b)); θ)
+# Feasible starting dual: the component of A closest to 0 (a valid theta ∈ A).
+initdual!(theta, A::IntervalEnvelope) = (fill!(theta, clamp(zero(eltype(theta)), A.a, A.b)); theta)

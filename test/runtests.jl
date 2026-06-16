@@ -7,6 +7,8 @@ using Random
     include("test_check.jl")
     include("test_riskenvelope.jl")
     include("test_psimodel_prox.jl")
+    include("test_cauchy_decrease.jl")
     include("test_lasso_reduce.jl")
     include("test_risk_finitedim_p1.jl")
+    include("test_solver_robustness.jl")
 end
