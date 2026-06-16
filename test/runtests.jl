@@ -1,0 +1,12 @@
+using ROLOpt
+using Test
+using LinearAlgebra
+using Random
+
+@testset "ROLOpt.jl (Phase 1: Cauchy-only TR-Risk)" begin
+    include("test_check.jl")
+    include("test_riskenvelope.jl")
+    include("test_psimodel_prox.jl")
+    include("test_lasso_reduce.jl")
+    include("test_risk_finitedim_p1.jl")
+end

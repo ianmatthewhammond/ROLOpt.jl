@@ -1,0 +1,103 @@
+# Finite-difference derivative checks (ports of ROL `Objective::checkGradient`,
+# `checkHessVec`, `checkHessSym`, `Constraint::checkApplyJacobian`,
+# `checkAdjointConsistency`). Central differences are used so that for the
+# quadratic test objectives the error is at roundoff level.
+#
+# Each `check_*` returns the minimum error over a range of step sizes, so tests
+# can assert it is small.
+
+const _FD_STEPS = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+
+"""
+    check_gradient(f, x, v) -> minerr
+
+Compares the directional derivative `⟨∇f(x), v⟩` against a central finite
+difference of `t -> f(x + t v)`.
+"""
+function check_gradient(f::SmoothObjective, x, v)
+    g = gradient(f, x)
+    exact = apply(g, v)
+    xp = similar(x)
+    minerr = Inf
+    for h in _FD_STEPS
+        @. xp = x + h * v
+        fp = value(f, xp)
+        @. xp = x - h * v
+        fm = value(f, xp)
+        fd = (fp - fm) / (2h)
+        minerr = min(minerr, abs(fd - exact))
+    end
+    return minerr
+end
+
+"""
+    check_hessvec(f, x, v) -> minerr
+
+Compares `∇²f(x) v` against a central finite difference of `∇f` along `v`.
+"""
+function check_hessvec(f::SmoothObjective, x, v)
+    hv = hessVec(f, v, x)
+    gp = similar(x)
+    gm = similar(x)
+    xp = similar(x)
+    fd = similar(x)
+    minerr = Inf
+    for h in _FD_STEPS
+        @. xp = x + h * v
+        gradient!(gp, f, xp)
+        @. xp = x - h * v
+        gradient!(gm, f, xp)
+        @. fd = (gp - gm) / (2h)
+        @. fd -= hv
+        minerr = min(minerr, norm(fd))
+    end
+    return minerr
+end
+
+"""
+    check_jacobian(F, x, v) -> minerr
+
+Compares `F'(x) v` against a central finite difference of `F` along `v`.
+"""
+function check_jacobian(F::VectorMap{T}, x, v) where {T}
+    Jv = mapvalue(F, x)
+    applyJacobian!(Jv, F, v, x)
+    fp = Vector{T}(undef, rangedim(F))
+    fm = similar(fp)
+    xp = similar(x)
+    minerr = Inf
+    for h in _FD_STEPS
+        @. xp = x + h * v
+        value!(fp, F, xp)
+        @. xp = x - h * v
+        value!(fm, F, xp)
+        @. fp = (fp - fm) / (2h) - Jv
+        minerr = min(minerr, norm(fp))
+    end
+    return minerr
+end
+
+"""
+    check_adjoint(F, x, v, θ) -> err
+
+Verifies the adjoint (transpose) identity `⟨F'(x) v, θ⟩ = ⟨v, F'(x)* θ⟩`
+(metric-free coordinate pairing).
+"""
+function check_adjoint(F::VectorMap{T}, x, v, θ) where {T}
+    Jv = Vector{T}(undef, rangedim(F))
+    applyJacobian!(Jv, F, v, x)
+    Jaθ = similar(x)
+    applyAdjointJacobian!(Jaθ, F, θ, x)
+    return abs(dot(Jv, θ) - dot(v, Jaθ))
+end
+
+"""
+    check_hess_sym(f, x, u, v) -> err
+
+Verifies Hessian symmetry `⟨∇²f(x) u, v⟩ = ⟨∇²f(x) v, u⟩`.
+"""
+function check_hess_sym(f::SmoothObjective, x, u, v)
+    Hu = hessVec(f, u, x)
+    Hv = hessVec(f, v, x)
+    return abs(apply(Hu, v) - apply(Hv, u))
+end

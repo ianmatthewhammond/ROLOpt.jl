@@ -1,0 +1,139 @@
+# Trust-region subproblem building blocks. Phase 1 ships the proximal-gradient
+# step, the stationarity metric, and the Cauchy point. NCG/SPG improvers
+# (dncg/dspg/dbls/dprox) are Phase 2.
+#
+# Blueprint: ROL_TypeP_Algorithm_Def.hpp (pgstep) and
+# ROL_TypeP_TrustRegionAlgorithm_Def.hpp (dcauchy).
+
+"""Evaluation counters (columns mirror the paper's result tables)."""
+mutable struct Counters
+    nfval::Int   # evaluations of the (f, F) pair
+    ngrad::Int   # gradient computations
+    nhess::Int   # model Hessian applications
+    npsi::Int    # evaluations of psi_k
+    nprox::Int   # prox_{t psi_k} evaluations
+    nspg::Int    # total dual spectral-projected-gradient iterations (for averaging)
+end
+Counters() = Counters(0, 0, 0, 0, 0, 0)
+
+# nobj is the nonsmooth term (a PsiModel or a ProxObjective). prox! returns a
+# DualSPGResult for PsiModel; the .iters field feeds the nspg average. For a plain
+# ProxObjective prox! returns the output vector, so spg_iters(...) reports 0.
+spg_iters(r::DualSPGResult) = r.iters
+spg_iters(::Any) = 0
+
+"""
+    pgstep!(pgiter, step, nobj, x, dg, t) -> res
+
+Proximal-gradient step: `pgiter = prox_{t·nobj}(x - t·dg)`, `step = pgiter - x`.
+`dg` is the primal gradient. Returns the prox result (for diagnostics/counting).
+"""
+function pgstep!(pgiter, step, nobj, x, dg, t)
+    @. step = x - t * dg
+    res = prox!(pgiter, nobj, step, t)
+    @. step = pgiter - x
+    return res
+end
+
+"""
+    hstat!(step, pgiter, nobj, X, x, dg, t0) -> h_k
+
+Stationarity metric `h_k = ‖prox_{t0·nobj}(x - t0·dg) - x‖_X / t0`.
+"""
+function hstat!(step, pgiter, nobj, X::HilbertSpace, x, dg, t0)
+    pgstep!(pgiter, step, nobj, x, dg, t0)
+    return spnorm(X, step) / t0
+end
+
+"""
+    dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm)
+
+Cauchy point for the TR subproblem `min q_k(x_k+s) + psi_k(x_k+s)` s.t. ‖s‖ ≤ del,
+via a bidirectional proximal search on the step length `alpha`. Writes the Cauchy
+step into `s` (and the trial iterate `x_k+s` into `px`). `sval0 = f(x_k)`,
+`nval0 = psi_k(x_k)`; returned `sval`/`nval` are the model smooth/nonsmooth values
+at the Cauchy point, so `pred = (sval0+nval0) - (sval+nval)`.
+
+Port of ROL `TrustRegionAlgorithm::dcauchy`.
+"""
+function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
+                  sval0, nval0, px, dwa, dwa1, cnt, p) where {T}
+    half = T(1) / 2
+    sold = sval0
+    nold = nval0
+
+    # Evaluate the model decrease at step length `alpha`. Writes s, px; returns
+    # (sval, nval, pRed, Qk, snorm).
+    function trystep(alpha)
+        res = pgstep!(px, s, nobj, x, dg, alpha)
+        cnt.nprox += 1; cnt.nspg += spg_iters(res)
+        snorm = spnorm(X, s)
+        modelhessvec!(dwa, model, s); cnt.nhess += 1
+        nval = value(nobj, px); cnt.npsi += 1
+        gs = inner(X, s, dg)
+        sval = sold + gs + half * apply(dwa, s)
+        pRed = (sold + nold) - (sval + nval)
+        Qk = gs + nval - nold
+        return sval, nval, pRed, Qk, snorm
+    end
+
+    # Initial step
+    res = pgstep!(px, s, nobj, x, dg, alpha)
+    cnt.nprox += 1; cnt.nspg += spg_iters(res)
+    snorm = spnorm(X, s)
+    sval = sold; nval = nold; pRed = zero(T); Qk = zero(T)
+    interp = snorm > del
+    if !interp
+        sval, nval, pRed, Qk, snorm = trystep(alpha)
+        interp = pRed < -p.mu0 * Qk
+    end
+
+    cnt_steps = 0
+    if interp                       # decrease alpha until sufficient model decrease
+        search = true
+        while search
+            alpha *= p.interpf
+            res = pgstep!(px, s, nobj, x, dg, alpha)
+            cnt.nprox += 1; cnt.nspg += spg_iters(res)
+            snorm = spnorm(X, s)
+            if snorm <= del
+                sval, nval, pRed, Qk, snorm = trystep(alpha)
+                search = (pRed < -p.mu0 * Qk) && (cnt_steps < p.redlim)
+            end
+            cnt_steps += 1
+        end
+    else                            # extrapolate: increase alpha while it helps
+        alphas = alpha; mvals = pRed; svals = sval
+        copyto!(dwa1, dwa)
+        search = true
+        while search
+            alpha *= p.extrapf
+            res = pgstep!(px, s, nobj, x, dg, alpha)
+            cnt.nprox += 1; cnt.nspg += spg_iters(res)
+            snorm = spnorm(X, s)
+            if snorm <= del && cnt_steps < p.explim
+                sval, nval, pRed, Qk, snorm = trystep(alpha)
+                if pRed >= -p.mu0 * Qk && abs(pRed - mvals) > p.qtol * abs(mvals)
+                    copyto!(dwa1, dwa); alphas = alpha; mvals = pRed; svals = sval
+                    search = true
+                else
+                    search = false
+                end
+            else
+                search = false
+            end
+            cnt_steps += 1
+        end
+        alpha = alphas
+    end
+
+    # Finalize at the chosen alpha so s, px, sval, nval are mutually consistent.
+    res = pgstep!(px, s, nobj, x, dg, alpha)
+    cnt.nprox += 1; cnt.nspg += spg_iters(res)
+    snorm = spnorm(X, s)
+    modelhessvec!(dwa, model, s); cnt.nhess += 1
+    nval = value(nobj, px); cnt.npsi += 1
+    gs = inner(X, s, dg)
+    sval = sold + gs + half * apply(dwa, s)
+    return alpha, sval, nval, snorm
+end
