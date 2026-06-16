@@ -58,7 +58,8 @@ applyAdjointHessian!(out, im::InexactMap, θ, v, x) = applyAdjointHessian!(out, 
 # ---------------------------------------------------------------------------
 struct InexactRecord{T}
     iter::Int
-    hk::T; delta::T
+    hk::T; delta::T      # certified (conservative) h_k and the radius
+    hpost::T             # stationarity of the FINAL injected model (hk must dominate)
     tolg::T; eg::T       # gradient bound and realized ‖g_k-∇f‖_X
     tolb::T; eb::T       # value bound and realized ‖b_k-F‖_Y
     tolj::T; eA::T       # jacobian bound and realized ‖A_k-F'‖_op
@@ -76,7 +77,7 @@ mutable struct InexactOracle{T,SO<:SmoothObjective{T}}
     zeta_k::T; zfactor::T # forcing sequence ζ_k (multiplied by zfactor each accept)
     # current-iteration scratch (filled during refresh / cred)
     tolg::T; tolb::T; tolj::T
-    eg::T; ebn::T; eA::T
+    eg::T; ebn::T; eA::T; hpost::T
     records::Vector{InexactRecord{T}}
 end
 # `eta` must satisfy the paper's 0 < eta < min(eta1, 1-eta2); the default 1e-5 is
@@ -84,10 +85,15 @@ end
 function InexactOracle(f::SmoothObjective{T};
                        kgrad=0.5, kval=0.5, kjac=0.5, kobj=1e2,
                        rho=0.5, eta=1e-5, zeta=1.5, zeta0=1.0, zfactor=0.5) where {T}
+    zero(T) < rho <= one(T) || throw(ArgumentError("InexactOracle requires 0 < rho <= 1"))
+    zeta > one(T) || throw(ArgumentError("InexactOracle requires zeta > 1"))
+    zero(T) < zfactor < one(T) || throw(ArgumentError("InexactOracle requires 0 < zfactor < 1"))
+    all(>(zero(T)), (kgrad, kval, kjac, kobj, eta, zeta0)) ||
+        throw(ArgumentError("InexactOracle requires positive kgrad,kval,kjac,kobj,eta,zeta0"))
     z = zero(T)
     InexactOracle{T,typeof(f)}(f, T(kgrad), T(kval), T(kjac), T(kobj), T(rho),
                                T(eta), T(zeta), T(zeta0), T(zfactor),
-                               z, z, z, z, z, z, InexactRecord{T}[])
+                               z, z, z, z, z, z, z, InexactRecord{T}[])
 end
 
 # Deterministic unit-ish direction of length k (alternating, nonzero).
@@ -144,7 +150,7 @@ end
 
 # Push the assembled audit record for this iteration.
 function push_record!(o::InexactOracle{T}, iter, hk, delta, pred, ared, cred, credbound) where {T}
-    push!(o.records, InexactRecord{T}(iter, hk, delta, o.tolg, o.eg, o.tolb, o.ebn,
+    push!(o.records, InexactRecord{T}(iter, hk, delta, o.hpost, o.tolg, o.eg, o.tolb, o.ebn,
                                       o.tolj, o.eA, pred, ared, cred, credbound))
     return o
 end

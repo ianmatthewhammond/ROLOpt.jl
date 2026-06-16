@@ -54,6 +54,7 @@
                 @test r.eb <= kv * min(r.hk, r.delta^2)  + 1e-12    # ‖b_k-F‖_Y  (note Δ²)
                 @test r.eA <= kj * min(r.hk, r.delta)    + 1e-12    # ‖A_k-F'‖_op
                 @test abs(r.ared - r.cred) <= r.credbound + 1e-12   # Condition 2
+                @test r.hk >= r.hpost - 1e-14            # certified metric dominates final model
             end
             @test any(r -> r.cred != r.ared, oracle.records)       # cred actually used
             @test oracle.records[end].credbound <= oracle.records[1].credbound + 1e-12
@@ -79,6 +80,17 @@
             @test r.eb <= min(r.hk, r.delta^2) + 1e-12
             @test r.eA <= min(r.hk, r.delta)   + 1e-12
         end
+    end
+
+    @testset "oracle constructor validation" begin
+        f = TikhonovObjective(1.0)
+        @test_throws ArgumentError InexactOracle(f; rho=0.0)
+        @test_throws ArgumentError InexactOracle(f; rho=1.5)
+        @test_throws ArgumentError InexactOracle(f; zeta=1.0)
+        @test_throws ArgumentError InexactOracle(f; zfactor=1.0)
+        @test_throws ArgumentError InexactOracle(f; zfactor=0.0)
+        @test_throws ArgumentError InexactOracle(f; kgrad=-0.1)
+        @test InexactOracle(f) isa InexactOracle
     end
 
     @testset "Condition 2 eta validation" begin

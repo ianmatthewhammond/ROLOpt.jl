@@ -199,15 +199,21 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
             hk = hknew
             done && break
         end
-        # Postcondition: inject data consistent with the final (reported) h_k so the
-        # model/steps satisfy Condition 1 against it; record the realized errors.
+        # Postcondition: inject data consistent with the fixed-point h_k so the
+        # model/steps satisfy Condition 1 against it; then recompute the metric for
+        # THAT final model and return a conservative certified value max(hk, hpost)
+        # (so the reported metric dominates the final model's true stationarity and
+        # cannot falsely certify convergence). Condition 1 still holds because the
+        # data error <= kappa·min(hk, Δ) <= kappa·min(max(hk,hpost), Δ).
         set_tols!(oracle, hk, delta)
         inject_gradient!(gcoord, oracle, X, x); cnt.ngrad += 1
         inject_linearization!(imap, oracle, X, Y, x)
         riesz!(dg, X, gcoord)
         setmodel!(model, x, gcoord)
         reanchor!(psi, x)
-        return hk, hok
+        hpost, okpost = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
+        oracle.hpost = hpost
+        return max(hk, hpost), hok && okpost
     end
 
     # --- Initialize at x_1 ---
