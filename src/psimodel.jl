@@ -41,6 +41,7 @@ end
 function DualSPGOptions{T}(; lam0=1, gmin=1e-6, gmax=1e6, sig1=0.1, sig2=0.9,
                            alpha=1e-4, beta=0.5, memory=1, tol=1e-10,
                            maxit=1000, lsmax=50) where {T}
+    memory >= 1 || throw(ArgumentError("DualSPGOptions requires memory >= 1"))
     DualSPGOptions{T}(T(lam0), T(gmin), T(gmax), T(sig1), T(sig2), T(alpha),
                       T(beta), Int(memory), T(tol), Int(maxit), Int(lsmax))
 end
@@ -62,7 +63,7 @@ function PsiWorkspace(::Type{T}, n::Integer, m::Integer, memory::Integer) where 
     vy() = zeros(T, m)
     PsiWorkspace{T,Vector{T},Vector{T}}(vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(),
         vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(),
-        zeros(T, max(Int(memory), 1)), Ref(0), Ref(0))
+        zeros(T, Int(memory)), Ref(0), Ref(0))
 end
 
 # Fixed-capacity nonmonotone d-memory ring (no push!/popfirst!/view allocations).

@@ -53,6 +53,18 @@ function applyAdjointJacobian!(out, im::InexactMap, θ, x)
 end
 applyAdjointHessian!(out, im::InexactMap, θ, v, x) = applyAdjointHessian!(out, im.F, θ, v, x)
 
+# Scratch-taking forms (hot dual path): forward the buffer to the wrapped exact F
+# so an InexactMap(QuadraticMap, …) adjoint is allocation-free, then add the
+# perturbation. _dual_d! passes ws.qadj; modelhessvec! passes the model scratch.
+# (E is constant, so F'' is unperturbed — the Hessian adjoint just delegates.)
+function applyAdjointJacobian!(out, im::InexactMap, θ, x, scratch)
+    applyAdjointJacobian!(out, im.F, θ, x, scratch)
+    mul!(out, transpose(im.E), θ, one(eltype(out)), one(eltype(out)))   # out += Eᵀ θ
+    return out
+end
+applyAdjointHessian!(out, im::InexactMap, θ, v, x, scratch) =
+    applyAdjointHessian!(out, im.F, θ, v, x, scratch)
+
 # ---------------------------------------------------------------------------
 # Audit record for one outer iteration.
 # ---------------------------------------------------------------------------

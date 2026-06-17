@@ -116,4 +116,13 @@ end
         @test isapprox(psi.theta[1], 1.0; atol=1e-8)    # psi.theta overwritten in place
         @test isapprox(snap[1], 0.0; atol=1e-8)         # the copy retained the first dual
     end
+
+    @testset "DualSPGOptions requires memory >= 1" begin
+        # Algorithm 2's nonmonotone reference needs a positive window; the workspace
+        # ring would otherwise be empty (mismatch with opts.memory).
+        @test_throws ArgumentError DualSPGOptions{Float64}(memory=0)
+        @test_throws ArgumentError DualSPGOptions{Float64}(memory=-1)
+        @test DualSPGOptions{Float64}(memory=1).memory == 1
+        @test DualSPGOptions{Float64}(memory=5).memory == 5
+    end
 end

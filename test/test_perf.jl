@@ -32,6 +32,13 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
     setmodel!(modelc, xk, randn(rng, n))
     freeze_curvature!(modelc, ones(m))
 
+    # InexactMap wrapping the QuadraticMap: its scratch-forwarding adjoint must keep
+    # _dual_d! allocation-free (the generic fallback would drop the buffer and hit
+    # the allocating 4-arg QuadraticMap method).
+    imap = ROLOpt.InexactMap(F, n)
+    imap.E .= 0.01 .* randn(rng, m, n); imap.eb .= 0.01 .* randn(rng, m)
+    psi_im = PsiModel(phi, A, imap, X, Y, n); reanchor!(psi_im, xk)
+
     z = randn(rng, n); t = 0.5
     theta = ones(m); pbuf = zeros(n); mubuf = zeros(m)
     v = randn(rng, n); outn = zeros(n); stepn = zeros(n); dgn = randn(rng, n)
@@ -60,6 +67,7 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
     @testset "@allocated == 0: hot kernels (type-stable barrier, post-warmup)" begin
         # warm up each call (compile the kernel + the nbytes specialization)
         nbytes(ROLOpt._dual_d!, psi, z, t, theta, pbuf, mubuf)
+        nbytes(ROLOpt._dual_d!, psi_im, z, t, theta, pbuf, mubuf)
         nbytes(modelhessvec!, outn, modelf, v)
         nbytes(modelhessvec!, outn, modelc, v)
         nbytes(prox!, outn, psi, z, t)
@@ -68,6 +76,7 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
         nbytes(dspg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, gmodc, gmodp, stepn, pgi, hs, dx, cnt, sp)
 
         @test nbytes(ROLOpt._dual_d!, psi, z, t, theta, pbuf, mubuf) == 0
+        @test nbytes(ROLOpt._dual_d!, psi_im, z, t, theta, pbuf, mubuf) == 0   # InexactMap(QuadraticMap) adjoint scratch
         @test nbytes(modelhessvec!, outn, modelf, v) == 0
         @test nbytes(modelhessvec!, outn, modelc, v) == 0          # F'' adjoint path
         @test nbytes(prox!, outn, psi, z, t) == 0
