@@ -44,7 +44,7 @@ export check_gradient, check_hessvec, check_jacobian, check_adjoint, check_hess_
 export PsiModel, reanchor!, DualSPGResult, DualSPGOptions
 
 # Model + subsolvers
-export QuadraticModel, setmodel!, modelhessvec!, Counters, pgstep!, hstat!, dcauchy!, dspg!, SpgParams
+export QuadraticModel, setmodel!, modelhessvec!, freeze_curvature!, Counters, pgstep!, hstat!, dcauchy!, dspg!, SpgParams
 
 # Inexactness
 export InexactOracle, InexactMap, InexactRecord, opnorm_metric

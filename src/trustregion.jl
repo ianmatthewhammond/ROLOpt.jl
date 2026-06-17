@@ -84,6 +84,7 @@ struct TROptions{T}
     maxit::Int
     verbose::Int
     subsolver::Symbol  # :cauchy (Cauchy point only) or :spg (Cauchy + SPG improver)
+    use_curvature::Bool  # include the (theta_k, F'') curvature term in B_k
     dualspg::DualSPGOptions{T}
     spg::SpgParams{T}
 end
@@ -93,14 +94,14 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       gamma1=0.25, gamma3=10, t0=1, alpha0=t0,
                       mu0=1e-2, interpf=0.1, extrapf=10, redlim=10, explim=10, qtol=1e-8,
                       trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
-                      subsolver::Symbol=:cauchy,
+                      subsolver::Symbol=:cauchy, use_curvature::Bool=false,
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}(),
                       spg::SpgParams{T}=SpgParams{T}()) where {T}
     subsolver in (:cauchy, :spg) || throw(ArgumentError("subsolver must be :cauchy or :spg"))
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
                  T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
-                 Int(maxit), Int(verbose), subsolver, dualspg, spg)
+                 Int(maxit), Int(verbose), subsolver, use_curvature, dualspg, spg)
 end
 
 """
@@ -154,7 +155,11 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     imap = inexact ? InexactMap(prob.F, n) : nothing
     Fmodel = inexact ? imap : prob.F
     psi = PsiModel(prob.phi, prob.A, Fmodel, X, Y, n; opts=opts.dualspg)
-    model = QuadraticModel(prob.f, X, n)
+    # Curvature model adds (theta_k, F''(x_k) ·) to B_k, with theta_k frozen from the
+    # stationarity prox each iteration; F'' is taken from the exact F (Condition 1
+    # bounds g_k/b_k/A_k, not the Hessian — Fmodel's F'' delegates to the exact F).
+    model = opts.use_curvature ? QuadraticModel(prob.f, Fmodel, X, n, m) :
+                                 QuadraticModel(prob.f, X, n)
     cnt = Counters()
 
     x      = copyto!(zeros(T, n), x0)
@@ -184,7 +189,9 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
             riesz!(dg, X, gcoord)
             setmodel!(model, x, gcoord)
             reanchor!(psi, x)
-            return hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
+            hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
+            freeze_curvature!(model, psi.theta)         # theta_k from the stationarity prox
+            return hk, hok
         end
         hk = hk0; hok = false
         for _ in 1:10
@@ -213,6 +220,7 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         reanchor!(psi, x)
         hpost, okpost = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
         oracle.hpost = hpost
+        freeze_curvature!(model, psi.theta)             # theta_k from the stationarity prox
         return max(hk, hpost), hok && okpost
     end
 

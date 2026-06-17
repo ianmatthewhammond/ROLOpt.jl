@@ -35,8 +35,8 @@ Algorithm 2, and the `RiskEnvelope` abstraction.
 | **2a** | Diagonal weighted (mass-matrix / probability) spaces, metric-aware prox/adjoint, `ConvexCombinationEnvelope` (E+CVaR) | **done, tested** |
 | **2b-i** | SPG improver subsolver (`subsolver=:spg`) — makes the nonsmooth CVaR problem converge fast | **done, tested** |
 | **2b-ii** | Wired inexactness (Conditions 1–2) via `InexactOracle` + `cred`, audited against the post-model `h_k` | **done, tested** |
-| 2b | `(theta_k, F'')` curvature term, NCG subsolver | planned |
-| 3 | Performance / type-stability hardening (zero-alloc hot loops, BigFloat) | planned |
+| **2b-iii** | `(theta_k, F'')` Lagrangian curvature term in `B_k` (`use_curvature=true`), `theta_k` frozen from the stationarity prox | **done, tested** |
+| 3 / opt | Performance / type-stability hardening (zero-alloc hot loops, BigFloat); optional NCG subsolver | planned |
 
 Weighted spaces use a **diagonal** metric (`M = diag(w)`): element volumes for the
 control space `X`, probabilities for `Y = L²(Ω,P)`. This is what the paper uses

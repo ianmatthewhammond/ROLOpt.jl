@@ -74,7 +74,7 @@ mutable struct InexactOracle{T,SO<:SmoothObjective{T}}
     kgrad::T; kval::T; kjac::T; kobj::T
     rho::T               # fraction of each tolerance actually injected, in (0,1)
     eta::T; zeta::T      # Condition 2 exponent params
-    zeta_k::T; zfactor::T # forcing sequence ζ_k (multiplied by zfactor each accept)
+    zeta_k::T; zfactor::T # forcing sequence ζ_k (multiplied by zfactor each outer iteration)
     # current-iteration scratch (filled during refresh / cred)
     tolg::T; tolb::T; tolj::T
     eg::T; ebn::T; eA::T; hpost::T

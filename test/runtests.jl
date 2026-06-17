@@ -14,4 +14,5 @@ using Random
     include("test_weighted.jl")
     include("test_improver.jl")
     include("test_inexact.jl")
+    include("test_curvature.jl")
 end
