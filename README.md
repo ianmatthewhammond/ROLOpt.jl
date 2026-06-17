@@ -36,7 +36,7 @@ Algorithm 2, and the `RiskEnvelope` abstraction.
 | **2b-i** | SPG improver subsolver (`subsolver=:spg`) — makes the nonsmooth CVaR problem converge fast | **done, tested** |
 | **2b-ii** | Wired inexactness (Conditions 1–2) via `InexactOracle` + `cred`, audited against the post-model `h_k` | **done, tested** |
 | **2b-iii** | `(theta_k, F'')` Lagrangian curvature term in `B_k` (`use_curvature=true`), `theta_k` frozen from the stationarity prox | **done, tested** |
-| 3 / opt | Performance / type-stability hardening (zero-alloc hot loops, BigFloat); optional NCG subsolver | planned |
+| **3** | Hardening: zero-alloc hot kernels + `@allocated`/`@inferred` guards, function-barrier `solve` (type-stable loop), generic precision (BigFloat / Float32), NCG subsolver (`subsolver=:ncg`) | **done, tested** |
 
 Weighted spaces use a **diagonal** metric (`M = diag(w)`): element volumes for the
 control space `X`, probabilities for `Y = L²(Ω,P)`. This is what the paper uses
@@ -69,9 +69,9 @@ res.J, res.hk  # objective value and stationarity metric
 - `SmoothObjective`: `DiagonalQuadratic`, `QuadraticObjective`, `TikhonovObjective`, `ZeroObjective`.
 - `VectorMap` (`F`): `AffineMap`, `QuadraticMap`.
 - `ProxObjective` (`phi`): `L1Objective`, `BoundConstraint`, `BoxL1Objective`, `ZeroProx`.
-- `RiskEnvelope`: `IntervalEnvelope` (support function + projection).
-- `PsiModel` + `prox!` — Algorithm 2 (returns a `DualSPGResult` with convergence diagnostics).
-- `RiskProblem`, `solve`, `TROptions` — the TR-Risk driver.
+- `RiskEnvelope`: `IntervalEnvelope` (box), `ConvexCombinationEnvelope` (E + CVaR) — metric-aware support function + projection.
+- `PsiModel` + `prox!` — Algorithm 2 (returns an isbits `DualSPGResult` status; the optimal dual is left in `psi.theta`).
+- `RiskProblem`, `solve`, `TROptions` — the TR-Risk driver. Trial step `opts.subsolver` ∈ `:cauchy` / `:spg` / `:ncg`; optional `(theta_k, F'')` curvature (`use_curvature=true`); inexact evaluations via an `InexactOracle` (Conditions 1 & 2). Generic over `T<:Real` (Float64 / Float32 / BigFloat).
 - `check_gradient` / `check_hessvec` / `check_jacobian` / `check_adjoint` / `check_hess_sym` — finite-difference derivative checks.
 
 ## Tests

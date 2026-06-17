@@ -115,4 +115,20 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
                                                 ROLOpt._SolveBuffers(Float64, zeros(nk), 1), Counters())
         @test resi isa TRResult{Float64,Vector{Float64}}
     end
+
+    @testset "@allocated: exact solve does not scale with iterations" begin
+        # An active interval-risk problem on which Cauchy converges slowly, so different
+        # maxit values genuinely run different iteration counts. Per-iteration work is
+        # zero-alloc (box envelope + affine map) and the loop is type-stable (function
+        # barrier), so a full solve allocates only its O(n) setup — independent of the
+        # iteration count. A per-iteration dynamic dispatch (pre-barrier) would make the
+        # 20-iter run allocate strictly more than the 10-iter run.
+        sm = DiagonalQuadratic([1e-3, 1.0, 1e2, 1.0], [0.5, -1.0, 2.0, -0.3])
+        pr = RiskProblem(sm, AffineMap(reshape([1.0, 1.0, 1.0, 1.0], 1, 4), [0.2]),
+                         L1Objective(fill(1e-2, 4)), IntervalEnvelope(0.0, 1.0))
+        runc(mi) = solve(pr, zeros(4); opts=TROptions{Float64}(maxit=mi, subsolver=:cauchy))
+        @test runc(10).iters == 10 && runc(20).iters == 20   # genuinely run to maxit (different counts)
+        runc(10); runc(20)                                    # warmup
+        @test (@allocated runc(10)) == (@allocated runc(20))  # no per-iteration allocation
+    end
 end
