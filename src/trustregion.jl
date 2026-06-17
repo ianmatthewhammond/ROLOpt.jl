@@ -237,7 +237,19 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     cnt.nfval += 1; cnt.npsi += 1
     Jval = inexact ? objective_value!(Fbuf, prob, x) : sval + nval   # exact true J(x_1)
     inexact && (cnt.nfval += 1)
-    !inexact && opts.delta0 <= 0 && (delta = spnorm(X, dg))
+    # Auto initial radius (delta0 <= 0): use a data-driven scale that accounts for
+    # NONSMOOTH stationarity, not just the smooth gradient. With f = 0 (or any
+    # grad f(x_1) = 0) and an active risk/phi term, spnorm(X, dg) = 0 would give a
+    # zero radius that false-stalls on iteration 1; the prox-gradient step (held in
+    # `step` after the initial hstat! inside refresh!) has norm t0*h_k > 0 whenever
+    # the nonsmooth term moves the iterate. Both zero => x is already
+    # prox-stationary, which the convergence/stall/status logic handles (reporting
+    # :prox_failure if the prox was unreliable); the one(T) fallback applies ONLY
+    # when the prox certified (hok), so it never masks a failed prox certification.
+    if !inexact && opts.delta0 <= 0
+        delta = max(spnorm(X, dg), spnorm(X, step))
+        iszero(delta) && hok && (delta = one(T))
+    end
 
     opts.verbose > 0 && _print_header()
     opts.verbose > 0 && _print_row(0, Jval, hk, delta, NaN, cnt)

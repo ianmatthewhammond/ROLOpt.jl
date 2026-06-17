@@ -3,7 +3,7 @@ using Test
 using LinearAlgebra
 using Random
 
-@testset "ROLOpt.jl (Phase 1: Cauchy-only TR-Risk)" begin
+@testset "ROLOpt.jl" begin
     include("test_check.jl")
     include("test_riskenvelope.jl")
     include("test_psimodel_prox.jl")
