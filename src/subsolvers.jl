@@ -264,3 +264,232 @@ function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
     end
     return sval, nval, worst
 end
+
+"""Nonlinear-CG improver parameters (defaults from ROL). `ncgType` selects the
+β formula (0:FR 1:PR+ 2:HZ 3:HS+ 4:DY+ 5:FR-PR 6:DY-HS); default 4 (Dai–Yuan+)."""
+struct NcgParams{T}
+    t0::T; lambdaMin::T; lambdaMax::T; tol1::T; tol2::T
+    maxit::Int; ncgType::Int; etaNCG::T; desPar::T
+end
+function NcgParams{T}(; t0=1, lambdaMin=1e-8, lambdaMax=1e8, tol1=1e-4, tol2=1e-2,
+                      maxit=25, ncgType=4, etaNCG=1e-2, desPar=0.2) where {T}
+    0 <= ncgType <= 6 || throw(ArgumentError("NcgParams ncgType must be in 0:6"))
+    NcgParams{T}(T(t0), T(lambdaMin), T(lambdaMax), T(tol1), T(tol2),
+                 Int(maxit), Int(ncgType), T(etaNCG), T(desPar))
+end
+
+"""
+    dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0, cnt) -> (alpha, nval)
+
+1-D minimizer of the TR model along `s`: `t -> ½t²·kappa + t·gs + nobj(y + t·s)`,
+over `t in [0, tmax]`, by Brent's method (quadratic interpolation + golden section).
+`nobj` is `psi_k` (the full nonsmooth term); only `value(nobj, ·)` is evaluated.
+`nval0` is the nonsmooth value at `y`. Port of ROL `TrustRegionAlgorithm::dbls`.
+"""
+function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T}
+    tol0 = T(1e4) * sqrt(eps(T))
+    epsb = T(1e-2) * sqrt(eps(T))
+    eps0 = T(1e2) * eps(T)
+    half = T(1) / 2; two = T(2)
+    lam = (T(3) - sqrt(T(5))) / 2                         # golden-section parameter
+    mu = T(1e-4)
+    nold = nval0
+    tL = zero(T); pL = zero(T)
+    tR = tmax
+    @. pwa = y + tR * s; nR = value(nobj, pwa); cnt.npsi += 1
+    pR = tR * (half * tR * kappa + gs) + nR - nold
+    # minimizer of the quadratic upper bound
+    t0 = tR; n0 = nR
+    if tmax > lambda
+        t0 = lambda
+        @. pwa = y + t0 * s; n0 = value(nobj, pwa); cnt.npsi += 1
+    end
+    ts = kappa > zero(T) ? min(tR, ((nold - n0) / kappa) / t0 - gs / kappa) : tR
+    t = min(t0, ts)
+    useOptT = true
+    if t <= tL
+        t = t0 < tR ? t0 : half * tR
+        useOptT = false
+    end
+    @. pwa = y + t * s; nt = value(nobj, pwa); cnt.npsi += 1
+    Qt = t * gs + nt - nold
+    pt = half * t * t * kappa + Qt
+    # phi constant along s => quadratic model: use the analytic minimizer
+    if useOptT && nt == nold && nR == nold
+        return ts, nold
+    end
+    # concave model => minimum at an end point
+    if pt >= max(pL, pR)
+        return tR, nR
+    end
+    # Brent's method
+    w = t; v = t; pw = pt; pv = pt
+    d = zero(T); e = zero(T); u = zero(T)
+    tm = half * (tL + tR)
+    tol1 = tol0 * abs(t) + epsb
+    tol2 = two * tol1
+    for _ in 1:50
+        dL = tL - t; dR = tR - t
+        if abs(e) > tol1
+            r = (t - w) * (pt - pv)
+            q = (t - v) * (pt - pw)
+            p = (t - v) * q - (t - w) * r
+            q = two * (q - r)
+            q > zero(T) && (p = -p)
+            q = abs(q)
+            etmp = e; e = d
+            if abs(p) >= abs(half * q * etmp) || p <= q * dL || p >= q * dR
+                e = t > tm ? dL : dR
+                d = lam * e
+            else
+                d = p / q
+                u = t + d
+                (u - tL < tol2 || tR - u < tol2) && (d = tm >= t ? tol1 : -tol1)
+            end
+        else
+            e = t > tm ? dL : dR
+            d = lam * e
+        end
+        u = t + (abs(d) >= tol1 ? d : (d >= zero(T) ? tol1 : -tol1))
+        @. pwa = y + u * s; nu = value(nobj, pwa); cnt.npsi += 1
+        Qu = u * gs + nu - nold
+        pu = half * u * u * kappa + Qu
+        if pu <= pt
+            u >= t ? (tL = t) : (tR = t)
+            v = w; w = t; t = u
+            pv = pw; pw = pt; pt = pu
+            nt = nu; Qt = Qu
+        else
+            u < t ? (tL = u) : (tR = u)
+            if pu <= pw || w == t
+                v = w; w = u; pv = pw; pw = pu
+            elseif pu <= pv || v == t || v == w
+                v = u; pv = pu
+            end
+        end
+        tm = half * (tL + tR)
+        tol1 = tol0 * abs(t) + epsb
+        tol2 = two * tol1
+        tol3 = eps0 * max(abs(Qt), one(T))
+        (pt <= mu * min(zero(T), Qt) + tol3 && abs(t - tm) <= tol2 - half * (tR - tL)) && break
+    end
+    return t, nt
+end
+
+# NCG beta (the 7 ROL ncgType formulas). `g2` = current "negative gradient" (the
+# scaled prox-grad step), `g4` = previous one; `diff` is scratch (set to g4 - g2).
+@inline function _ncg_beta(ncgType, X::HilbertSpace{T}, s, g2, g4, diff, gnorm2, gnorm0, etaNCG) where {T}
+    two = T(2); g0sq = gnorm0 * gnorm0
+    ncgType == 0 && return gnorm2 / g0sq                 # Fletcher–Reeves
+    @. diff = g4 - g2                                    # y_k = g_{k-1} - g_k
+    if ncgType == 1                                      # Polak–Ribière+
+        return max(zero(T), -inner(X, diff, g2) / g0sq)
+    elseif ncgType == 2                                  # Hager–Zhang
+        sy = inner(X, s, diff)
+        gg = inner(X, g2, g4)
+        eta = -one(T) / (spnorm(X, s) * min(etaNCG, gnorm0))
+        return max(eta, (gnorm2 - gg - two * inner(X, g2, s) * (gnorm2 - two * gg + g0sq) / sy) / sy)
+    elseif ncgType == 3                                  # Hestenes–Stiefel+
+        return max(zero(T), -inner(X, g2, diff) / inner(X, s, diff))
+    elseif ncgType == 4                                  # Dai–Yuan+
+        return max(zero(T), gnorm2 / inner(X, s, diff))
+    elseif ncgType == 5                                  # FR–PR hybrid
+        return max(-gnorm2, min(gnorm2, -inner(X, diff, g2))) / g0sq
+    else                                                 # ncgType == 6: DY–HS hybrid
+        return max(zero(T), min(-inner(X, g2, diff), gnorm2) / inner(X, s, diff))
+    end
+end
+
+"""
+    dncg!(y, model, nobj, X, x, gfk, del, sval, nval, s, pwa1, pwa2, pwa3, pwa4, pwa5, dwa, gmodc, gmodp, cnt, p) -> (sval, nval, worst_pgnorm)
+
+Nonlinear-CG improver. Starting from the Cauchy point `y` (= x + s_c) with model
+values `sval`/`nval`, take prox-gradient/NCG steps (each step length from a 1-D
+Brent line search `dbls!`, capped at the trust-region boundary) to further reduce
+the model `m_k(y) = q_k(y) + psi_k(y)` within `‖y-x‖_X ≤ del`. The descent/restart
+test keeps the model non-increasing, so the fraction-of-Cauchy-decrease still
+holds. `gfk` is the coordinate gradient `∇f(x_k)`; `worst_pgnorm` is the worst
+dual-SPG residual among the proxes here. Port of ROL `TrustRegionAlgorithm::dncg`.
+(`s/pwa1..5/dwa/gmodc/gmodp` are scratch.)
+"""
+function dncg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
+               sval, nval, s, pwa1, pwa2, pwa3, pwa4, pwa5, dwa, gmodc, gmodp, cnt, p) where {T}
+    half = T(1) / 2; two = T(2)
+    del2 = del * del
+    safeguard = sqrt(eps(T))
+    worst = zero(T)
+    nold = nval
+
+    # Model gradient at y (coordinate): gmodc = ∇f(x_k) + H (y - x_k).
+    @. pwa3 = y - model.xk
+    modelhessvec!(dwa, model, pwa3); cnt.nhess += 1
+    @. gmodc = gfk + dwa
+    @. pwa3 = y - x                                      # running y - x (Cauchy step so far)
+    ss0 = inner(X, pwa3, pwa3)
+    snorm0 = sqrt(ss0)
+
+    # Initial spectral step length + prox-gradient (Cauchy) direction from y.
+    riesz!(gmodp, X, gmodc)
+    lambda = clamp(p.t0 / max(spnorm(X, gmodp), eps(T)), p.lambdaMin, p.lambdaMax)
+    lam1 = lambda
+    res = pgstep!(pwa1, pwa2, nobj, y, gmodp, lambda)
+    countprox!(cnt, res); worst = max(worst, spg_pgnorm(res, T))
+    @. pwa2 = pwa2 / lambda                              # (prox - y)/lambda
+    @. s = pwa2
+    gs = apply(gmodc, s)
+    snorm = spnorm(X, s)
+    gnorm = snorm
+    gtol = min(p.tol1, p.tol2 * gnorm)
+
+    for _ in 1:p.maxit
+        modelhessvec!(dwa, model, s); cnt.nhess += 1     # H·s (coord)
+        sHs = apply(dwa, s)
+        ss = snorm * snorm
+        ds = inner(X, s, pwa3)
+        # Largest alpha keeping ‖(y-x) + alpha·s‖_X ≤ del, then the 1-D model min.
+        # Clamp to >= 0 (the Cauchy point can already sit on the boundary, giving a
+        # degenerate/negative root) and guard ss = 0 (a collapsed direction).
+        disc = ds * ds + ss * (del2 - snorm0 * snorm0)
+        alphaMax = ss > zero(T) ? max(zero(T), (-ds + sqrt(max(disc, zero(T)))) / ss) : zero(T)
+        alpha, nold = dbls!(y, s, lam1, alphaMax, sHs, gs, nobj, pwa5, nold, cnt)
+
+        @. y += alpha * s
+        @. gmodc += alpha * dwa
+        sval += alpha * (gs + half * alpha * sHs)
+        @. pwa3 = y - x
+        ss0 += alpha * (alpha * ss + two * ds)
+        snorm0 = sqrt(max(ss0, zero(T)))
+        snorm0 >= (one(T) - safeguard) * del && break    # on the TR boundary
+
+        riesz!(gmodp, X, gmodc)
+        lambda = clamp((sHs <= safeguard) ? p.t0 / max(spnorm(X, gmodp), eps(T)) : ss / sHs,
+                       p.lambdaMin, p.lambdaMax)
+        @. pwa4 = pwa2                                   # previous "negative gradient"
+        res = pgstep!(pwa1, pwa2, nobj, y, gmodp, lambda)
+        countprox!(cnt, res); worst = max(worst, spg_pgnorm(res, T))
+        @. pwa2 = pwa2 / lambda
+        gnorm0 = gnorm
+        gnorm = spnorm(X, pwa2)
+        gnorm <= gtol && break                           # prox-gradient stationary
+
+        gnorm2 = gnorm * gnorm
+        beta = _ncg_beta(p.ncgType, X, s, pwa2, pwa4, pwa5, gnorm2, gnorm0, p.etaNCG)
+        reset = true
+        if beta != zero(T) && isfinite(beta)
+            @. pwa5 = pwa2 + beta * s                    # candidate CG direction
+            @. pwa4 = y + pwa5
+            nval = value(nobj, pwa4); cnt.npsi += 1
+            gs = apply(gmodc, pwa5)
+            if gs + nval - nold <= -(one(T) - p.desPar) * gnorm2
+                @. s = pwa5; lam1 = one(T); reset = false
+            end
+        end
+        if reset                                         # beta=0 or not a descent dir
+            @. s = pwa2
+            gs = apply(gmodc, s)
+            lam1 = lambda
+        end
+        snorm = spnorm(X, s)
+    end
+    return sval, nold, worst
+end

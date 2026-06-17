@@ -62,9 +62,13 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
         @test (@inferred dspg!(copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0,
                                zeros(n), zeros(n), zeros(n), zeros(n), zeros(n), zeros(n),
                                cnt, sp)) isa NTuple{3,Float64}
+        @test (@inferred dncg!(copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0,
+                               zeros(n), zeros(n), zeros(n), zeros(n), zeros(n), zeros(n),
+                               zeros(n), zeros(n), zeros(n), cnt, NcgParams{Float64}())) isa NTuple{3,Float64}
     end
 
     @testset "@allocated == 0: hot kernels (type-stable barrier, post-warmup)" begin
+        np = NcgParams{Float64}()
         # warm up each call (compile the kernel + the nbytes specialization)
         nbytes(ROLOpt._dual_d!, psi, z, t, theta, pbuf, mubuf)
         nbytes(ROLOpt._dual_d!, psi_im, z, t, theta, pbuf, mubuf)
@@ -74,6 +78,7 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
         nbytes(pgstep!, outn, stepn, psi, xk, dgn, t)
         nbytes(dcauchy!, s, modelf, psi, X, xk, dg, 1.0, 1.0, s0, n0, px, dwa, dwa1, cnt, cp)
         nbytes(dspg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, gmodc, gmodp, stepn, pgi, hs, dx, cnt, sp)
+        nbytes(dncg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, s, pgi, stepn, px, dwa1, hs, dwa, gmodc, gmodp, cnt, np)
 
         @test nbytes(ROLOpt._dual_d!, psi, z, t, theta, pbuf, mubuf) == 0
         @test nbytes(ROLOpt._dual_d!, psi_im, z, t, theta, pbuf, mubuf) == 0   # InexactMap(QuadraticMap) adjoint scratch
@@ -83,6 +88,7 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
         @test nbytes(pgstep!, outn, stepn, psi, xk, dgn, t) == 0
         @test nbytes(dcauchy!, s, modelf, psi, X, xk, dg, 1.0, 1.0, s0, n0, px, dwa, dwa1, cnt, cp) == 0
         @test nbytes(dspg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, gmodc, gmodp, stepn, pgi, hs, dx, cnt, sp) == 0
+        @test nbytes(dncg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, s, pgi, stepn, px, dwa1, hs, dwa, gmodc, gmodp, cnt, np) == 0
     end
 
     @testset "@inferred: solve kernels (function barrier)" begin

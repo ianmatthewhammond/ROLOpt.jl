@@ -85,10 +85,11 @@ struct TROptions{T}
     htol::T          # stop when h_k <= htol
     maxit::Int
     verbose::Int
-    subsolver::Symbol  # :cauchy (Cauchy point only) or :spg (Cauchy + SPG improver)
+    subsolver::Symbol  # :cauchy (Cauchy only), :spg (Cauchy + SPG), or :ncg (Cauchy + NCG)
     use_curvature::Bool  # include the (theta_k, F'') curvature term in B_k
     dualspg::DualSPGOptions{T}
     spg::SpgParams{T}
+    ncg::NcgParams{T}
 end
 # Note `alpha0` defaults to `t0`: per the Phase-1 rule the Cauchy bidirectional
 # search starts from the same prox-gradient parameter `t0` used for h_k.
@@ -98,12 +99,14 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
                       subsolver::Symbol=:cauchy, use_curvature::Bool=false,
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}(),
-                      spg::SpgParams{T}=SpgParams{T}()) where {T}
-    subsolver in (:cauchy, :spg) || throw(ArgumentError("subsolver must be :cauchy or :spg"))
+                      spg::SpgParams{T}=SpgParams{T}(),
+                      ncg::NcgParams{T}=NcgParams{T}()) where {T}
+    subsolver in (:cauchy, :spg, :ncg) ||
+        throw(ArgumentError("subsolver must be :cauchy, :spg, or :ncg"))
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
                  T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
-                 Int(maxit), Int(verbose), subsolver, use_curvature, dualspg, spg)
+                 Int(maxit), Int(verbose), subsolver, use_curvature, dualspg, spg, ncg)
 end
 
 """
@@ -144,14 +147,15 @@ struct _SolveBuffers{T,VX<:AbstractVector{T},VY<:AbstractVector{T}}
     pgiter::VX
     px::VX                   # dcauchy trial iterate
     dwa::VX; dwa1::VX
-    gmodc::VX; gmodp::VX     # SPG improver scratch
+    gmodc::VX; gmodp::VX     # SPG / NCG improver scratch
+    ncgaux::VX               # NCG pwa5 scratch (the one extra buffer NCG needs)
     Fbuf::VY
 end
 function _SolveBuffers(::Type{T}, x0::AbstractVector{T}, m::Integer) where {T}
     n = length(x0)
     vx() = zeros(T, n)
     _SolveBuffers{T,Vector{T},Vector{T}}(copyto!(zeros(T, n), x0), vx(), vx(), vx(),
-        vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), zeros(T, m))
+        vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), zeros(T, m))
 end
 
 # Exact model refresh at `bw.x`: one pass, returns (h_k, hok).
@@ -217,6 +221,13 @@ function _trial_step!(prob::RiskProblem, opts, psi, model, bw, sval, nval, delta
         svalc, nvalc, wpg = dspg!(bw.xtrial, model, psi, X, bw.x, bw.gcoord, delta,
                                   svalc, nvalc, bw.gmodc, bw.gmodp, bw.step, bw.pgiter, bw.dwa, bw.px,
                                   cnt, opts.spg)
+        worstpg = max(worstpg, wpg)
+    elseif opts.subsolver === :ncg
+        # Improve the Cauchy point with nonlinear-CG steps (same monotone-model
+        # guarantee). Scratch reuses the post-dcauchy! buffers + one extra (ncgaux).
+        svalc, nvalc, wpg = dncg!(bw.xtrial, model, psi, X, bw.x, bw.gcoord, delta,
+                                  svalc, nvalc, bw.s, bw.pgiter, bw.step, bw.px, bw.dwa1, bw.ncgaux,
+                                  bw.dwa, bw.gmodc, bw.gmodp, cnt, opts.ncg)
         worstpg = max(worstpg, wpg)
     end
     pRed = (sval + nval) - (svalc + nvalc)              # model decrease m_k(x) - m_k(x+s)

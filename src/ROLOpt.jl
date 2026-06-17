@@ -47,6 +47,7 @@ export PsiModel, reanchor!, DualSPGResult, DualSPGOptions
 
 # Model + subsolvers
 export QuadraticModel, setmodel!, modelhessvec!, freeze_curvature!, Counters, pgstep!, hstat!, dcauchy!, dspg!, SpgParams
+export dncg!, dbls!, NcgParams
 
 # Inexactness
 export InexactOracle, InexactMap, InexactRecord, opnorm_metric
