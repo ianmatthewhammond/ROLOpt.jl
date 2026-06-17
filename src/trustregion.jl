@@ -158,7 +158,7 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
     # Curvature model adds (theta_k, F''(x_k) ·) to B_k, with theta_k frozen from the
     # stationarity prox each iteration; F'' is taken from the exact F (Condition 1
     # bounds g_k/b_k/A_k, not the Hessian — Fmodel's F'' delegates to the exact F).
-    model = opts.use_curvature ? QuadraticModel(prob.f, Fmodel, X, n, m) :
+    model = opts.use_curvature ? QuadraticModel(prob.f, Fmodel, X, Y, n, m) :
                                  QuadraticModel(prob.f, X, n)
     cnt = Counters()
 

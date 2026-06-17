@@ -44,13 +44,38 @@ ROLOpt.applyAdjointHessian!(o, c::CountHessMap, t, v, x) =
         @test isapprox(roff.J, ron.J; atol=1e-6)     # both reach the same objective
     end
 
+    @testset "curvature uses the Y metric (weighted Y)" begin
+        n = 4; m = 3
+        wY = rand(rng, m) .+ 0.5
+        X = EuclideanSpace(Float64); Y = WeightedSpace(wY)
+        Q = [let Mt = randn(rng, n, n); Mt'Mt end for _ in 1:m]
+        F = QuadraticMap(Q, randn(rng, m, n), randn(rng, m))
+        f = ZeroObjective{Float64}()                     # isolate the F'' term
+        xk = randn(rng, n); theta = randn(rng, m)
+        model = QuadraticModel(f, F, X, Y, n, m)
+        setmodel!(model, xk, zeros(n))
+        freeze_curvature!(model, theta)                  # stores M_Y·theta
+        for _ in 1:10
+            v = randn(rng, n)
+            Bv = modelhessvec!(zeros(n), model, v)
+            # coordinate formula: contract applyAdjointHessian! against M_Y·theta
+            ref = applyAdjointHessian!(zeros(n), F, wY .* theta, v, xk)
+            @test Bv ≈ ref atol=1e-10
+            # FD: ∇²_x (theta, F(x))_Y · v, where ∇_x (theta,F(x))_Y = F'(x)*(M_Y·theta)
+            gradL(x) = applyAdjointJacobian!(zeros(n), F, wY .* theta, x)
+            h = 1e-6
+            fd = (gradL(xk .+ h .* v) .- gradL(xk .- h .* v)) ./ (2h)
+            @test Bv ≈ fd atol=1e-4
+        end
+    end
+
     @testset "B_k with curvature is symmetric" begin
         n = 4; m = 3
         Q = [let Mt = randn(rng, n, n); Mt'Mt end for _ in 1:m]
         F = QuadraticMap(Q, randn(rng, m, n), randn(rng, m))
         f = QuadraticObjective(let M = randn(rng, n, n); M'M + I end, randn(rng, n))
-        X = EuclideanSpace(Float64)
-        model = QuadraticModel(f, F, X, n, m)
+        X = EuclideanSpace(Float64); Y = EuclideanSpace(Float64)
+        model = QuadraticModel(f, F, X, Y, n, m)
         setmodel!(model, randn(rng, n), randn(rng, n))
         freeze_curvature!(model, randn(rng, m))
         for _ in 1:20
@@ -67,7 +92,7 @@ ROLOpt.applyAdjointHessian!(o, c::CountHessMap, t, v, x) =
         F = QuadraticMap(Q, randn(rng, m, n), randn(rng, m))
         f = TikhonovObjective(1.0)
         X = EuclideanSpace(Float64); Y = EuclideanSpace(Float64)
-        model = QuadraticModel(f, F, X, n, m)
+        model = QuadraticModel(f, F, X, Y, n, m)
         setmodel!(model, randn(rng, n), randn(rng, n))
         psi = PsiModel(ZeroProx{Float64}(), IntervalEnvelope(0.0, 1.0), F, X, Y, n)
         reanchor!(psi, model.xk)
