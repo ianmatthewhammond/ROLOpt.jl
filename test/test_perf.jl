@@ -84,4 +84,29 @@ nbytes(f::F, args::Vararg{Any,N}) where {F,N} = @allocated f(args...)
         @test nbytes(dcauchy!, s, modelf, psi, X, xk, dg, 1.0, 1.0, s0, n0, px, dwa, dwa1, cnt, cp) == 0
         @test nbytes(dspg!, copy(xk), modelf, psi, X, xk, dg, 1.0, s0, n0, gmodc, gmodp, stepn, pgi, hs, dx, cnt, sp) == 0
     end
+
+    @testset "@inferred: solve kernels (function barrier)" begin
+        # solve() builds psi/model/(oracle,imap) behind a branch and dispatches once
+        # to a typed kernel; each kernel must infer (its loop never dynamically
+        # dispatches on a union-typed model/psi). Public solve() is allowed to branch.
+        nk = 3
+        fk = TikhonovObjective(1.0)
+        Fk = AffineMap(randn(rng, 1, nk), [0.3])
+        prob = RiskProblem(fk, Fk, ZeroProx{Float64}(), IntervalEnvelope(0.0, 1.0))
+
+        optse = TROptions{Float64}(maxit=50)
+        psie = PsiModel(prob.phi, prob.A, prob.F, prob.X, prob.Y, nk; opts=optse.dualspg)
+        mdle = QuadraticModel(fk, prob.X, nk)
+        rese = @inferred ROLOpt._solve_exact!(prob, optse, psie, mdle,
+                                              ROLOpt._SolveBuffers(Float64, zeros(nk), 1), Counters())
+        @test rese isa TRResult{Float64,Vector{Float64}}
+
+        optsi = TROptions{Float64}(maxit=50, delta0=1.0)
+        imap = InexactMap(prob.F, nk)
+        psii = PsiModel(prob.phi, prob.A, imap, prob.X, prob.Y, nk; opts=optsi.dualspg)
+        mdli = QuadraticModel(fk, prob.X, nk)
+        resi = @inferred ROLOpt._solve_inexact!(prob, optsi, psii, mdli, InexactOracle(fk), imap,
+                                                ROLOpt._SolveBuffers(Float64, zeros(nk), 1), Counters())
+        @test resi isa TRResult{Float64,Vector{Float64}}
+    end
 end

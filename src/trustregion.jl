@@ -135,6 +135,211 @@ function objective_value!(Fbuf, prob::RiskProblem, x)
     return value(prob.f, x) + suppA(prob.A, prob.Y, Fbuf) + value(prob.phi, x)
 end
 
+# Preallocated working set, bundled so the typed solver kernels (below) take a
+# small, stable argument list. All vectors are X-length except `Fbuf` (Y-length).
+struct _SolveBuffers{T,VX<:AbstractVector{T},VY<:AbstractVector{T}}
+    x::VX; xtrial::VX; gcoord::VX; dg::VX
+    s::VX                    # Cauchy step
+    step::VX                 # hstat step
+    pgiter::VX
+    px::VX                   # dcauchy trial iterate
+    dwa::VX; dwa1::VX
+    gmodc::VX; gmodp::VX     # SPG improver scratch
+    Fbuf::VY
+end
+function _SolveBuffers(::Type{T}, x0::AbstractVector{T}, m::Integer) where {T}
+    n = length(x0)
+    vx() = zeros(T, n)
+    _SolveBuffers{T,Vector{T},Vector{T}}(copyto!(zeros(T, n), x0), vx(), vx(), vx(),
+        vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), zeros(T, m))
+end
+
+# Exact model refresh at `bw.x`: one pass, returns (h_k, hok).
+function _refresh_exact!(prob::RiskProblem, opts, psi, model, bw, cnt)
+    X = prob.X
+    gradient!(bw.gcoord, prob.f, bw.x); cnt.ngrad += 1
+    riesz!(bw.dg, X, bw.gcoord)
+    setmodel!(model, bw.x, bw.gcoord)
+    reanchor!(psi, bw.x)
+    hk, hok = hstat!(bw.step, bw.pgiter, psi, X, bw.x, bw.dg, opts.t0, cnt)
+    freeze_curvature!(model, psi.theta)                 # theta_k from the stationarity prox
+    return hk, hok
+end
+
+# Inexact model refresh at `bw.x` for radius `delta`, returns (h_k, hok). A
+# warm-started fixed point injects (g_k, A_k, b_k) at tolerances kappa·min(h_k, Δ[^2])
+# and refines h_k, followed by a POSTCONDITION injection consistent with the final
+# h_k. The postcondition guarantees the data used by the model/steps satisfies
+# Condition 1 against the REPORTED h_k for any kappa (the fixed point — a
+# contraction only for kappa < 1 — just improves the estimate; correctness of the
+# contract does not depend on its convergence). The reported metric is the
+# conservative max(hk, hpost), so it cannot falsely certify convergence.
+function _refresh_inexact!(prob::RiskProblem{T}, opts, psi, model, oracle, imap, bw, hk0, delta, cnt) where {T}
+    X = prob.X; Y = prob.Y
+    hk = hk0; hok = false
+    for _ in 1:10
+        set_tols!(oracle, hk, delta)
+        inject_gradient!(bw.gcoord, oracle, X, bw.x); cnt.ngrad += 1
+        inject_linearization!(imap, oracle, X, Y, bw.x)
+        riesz!(bw.dg, X, bw.gcoord)
+        setmodel!(model, bw.x, bw.gcoord)
+        reanchor!(psi, bw.x)                            # b_k = F(x) + e_b via imap
+        hknew, hok = hstat!(bw.step, bw.pgiter, psi, X, bw.x, bw.dg, opts.t0, cnt)
+        done = abs(hknew - hk) <= T(1e-3) * max(hknew, eps(T))
+        hk = hknew
+        done && break
+    end
+    set_tols!(oracle, hk, delta)
+    inject_gradient!(bw.gcoord, oracle, X, bw.x); cnt.ngrad += 1
+    inject_linearization!(imap, oracle, X, Y, bw.x)
+    riesz!(bw.dg, X, bw.gcoord)
+    setmodel!(model, bw.x, bw.gcoord)
+    reanchor!(psi, bw.x)
+    hpost, okpost = hstat!(bw.step, bw.pgiter, psi, X, bw.x, bw.dg, opts.t0, cnt)
+    oracle.hpost = hpost
+    freeze_curvature!(model, psi.theta)                 # theta_k from the stationarity prox
+    return max(hk, hpost), hok && okpost
+end
+
+# Trial step shared by both kernels: Cauchy point (`subsolver=:cauchy`) optionally
+# improved by the SPG subsolver, then the TRUE reduction. Writes `bw.xtrial`;
+# returns (pRed, worstpg, Jtrial). `worstpg` is the worst dual-SPG residual among
+# the step's proxes (0 for exact proxes).
+function _trial_step!(prob::RiskProblem, opts, psi, model, bw, sval, nval, delta, cnt)
+    X = prob.X
+    _, svalc, nvalc, _, worstpg = dcauchy!(bw.s, model, psi, X, bw.x, bw.dg, delta,
+                                           opts.alpha0, sval, nval, bw.px, bw.dwa, bw.dwa1,
+                                           cnt, opts.cauchy)
+    @. bw.xtrial = bw.x + bw.s
+    if opts.subsolver === :spg
+        # Improve the Cauchy point with spectral proximal-gradient steps; the model
+        # value only decreases, so the fraction-of-Cauchy-decrease still holds.
+        svalc, nvalc, wpg = dspg!(bw.xtrial, model, psi, X, bw.x, bw.gcoord, delta,
+                                  svalc, nvalc, bw.gmodc, bw.gmodp, bw.step, bw.pgiter, bw.dwa, bw.px,
+                                  cnt, opts.spg)
+        worstpg = max(worstpg, wpg)
+    end
+    pRed = (sval + nval) - (svalc + nvalc)              # model decrease m_k(x) - m_k(x+s)
+    Jtrial = objective_value!(bw.Fbuf, prob, bw.xtrial); cnt.nfval += 1   # true J (exact F)
+    return pRed, worstpg, Jtrial
+end
+
+# Accept/reject decision shared by both kernels: returns (reject::Bool, rho).
+@inline function _accept_decision(rho, flag, worstpg, opts)
+    # A step whose proxes merely missed the dual-SPG tol by a little is judged on its
+    # true rho (force-rejecting these caused a death spiral on hard CVaR duals); a
+    # grossly unreliable step (worstpg > step_prox_tol) is rejected (and, being
+    # rejected, cannot grow the radius). Otherwise reject on nonpositive/NaN predicted
+    # reduction (flag >= NPOSPREDPOS) or insufficient ratio; POSPREDNEG is accepted,
+    # matching ROL.
+    gross = worstpg > opts.step_prox_tol
+    return gross || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
+end
+
+@inline function _final_status(converged, hok, stalled)
+    return converged ? :converged :
+           !hok      ? :prox_failure :   # unreliable stationarity prox dominates
+           stalled   ? :stalled :
+                       :maxiter
+end
+
+# Exact-evaluation kernel (no oracle): the trial reduction is the true ared.
+function _solve_exact!(prob::RiskProblem{T}, opts, psi, model, bw, cnt) where {T}
+    X = prob.X
+    hk, hok = _refresh_exact!(prob, opts, psi, model, bw, cnt)
+    sval = value(prob.f, bw.x); nval = value(psi, bw.x)
+    cnt.nfval += 1; cnt.npsi += 1
+    Jval = sval + nval                                  # exact true J(x_1)
+    # Auto initial radius (delta0 <= 0): a data-driven scale that accounts for
+    # NONSMOOTH stationarity, not just the smooth gradient. With f = 0 (or any
+    # grad f(x_1) = 0) and an active risk/phi term, spnorm(X, dg) = 0 alone would give
+    # a zero radius that false-stalls on iteration 1; the prox-gradient step (held in
+    # bw.step after the initial hstat!) has norm t0*h_k > 0 whenever the nonsmooth term
+    # moves the iterate. Both zero => x is already prox-stationary (handled by the
+    # convergence/stall/status logic); the one(T) fallback applies ONLY when the prox
+    # certified (hok), so it never masks a failed prox certification.
+    delta = opts.delta0 > 0 ? opts.delta0 : zero(T)
+    if opts.delta0 <= 0
+        delta = max(spnorm(X, bw.dg), spnorm(X, bw.step))
+        iszero(delta) && hok && (delta = one(T))
+    end
+
+    opts.verbose > 0 && _print_header()
+    opts.verbose > 0 && _print_row(0, Jval, hk, delta, NaN, cnt)
+
+    converged = false; stalled = false; iter = 0
+    while iter < opts.maxit
+        if hk <= opts.htol && hok                       # certified: h_k prox converged
+            converged = true; break
+        end
+        if delta <= eps(T) * max(one(T), spnorm(X, bw.x))   # radius collapsed below iterate precision
+            stalled = true; break
+        end
+        iter += 1
+        pRed, worstpg, Jtrial = _trial_step!(prob, opts, psi, model, bw, sval, nval, delta, cnt)
+        ared = Jval - Jtrial
+        rho, flag = analyze_ratio_red(ared, pRed, Jval, opts.trsafe * eps(T))
+        if _accept_decision(rho, flag, worstpg, opts)   # reject
+            delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2)
+        else                                            # accept
+            copyto!(bw.x, bw.xtrial); Jval = Jtrial
+            rho >= opts.eta2 && (delta = min(opts.gamma3 * delta, opts.deltamax))
+            hk, hok = _refresh_exact!(prob, opts, psi, model, bw, cnt)
+            sval = value(prob.f, bw.x); nval = value(psi, bw.x)
+            cnt.nfval += 1; cnt.npsi += 1
+        end
+        opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
+    end
+    return TRResult{T,Vector{T}}(bw.x, Jval, hk, iter, converged, _final_status(converged, hok, stalled), cnt)
+end
+
+# Inexact-evaluation kernel (Conditions 1 & 2): the accept/reject test uses the
+# computed reduction cred = ared + bounded error; the data is rebuilt whenever the
+# radius changes (its Condition-1 tolerances depend on Δ).
+function _solve_inexact!(prob::RiskProblem{T}, opts, psi, model, oracle, imap, bw, cnt) where {T}
+    X = prob.X
+    delta = opts.delta0                                 # validated > 0 for inexact
+    hk, hok = _refresh_inexact!(prob, opts, psi, model, oracle, imap, bw, delta, delta, cnt)
+    sval = value(prob.f, bw.x); nval = value(psi, bw.x)
+    cnt.nfval += 1; cnt.npsi += 1
+    Jval = objective_value!(bw.Fbuf, prob, bw.x); cnt.nfval += 1   # exact true J(x_1)
+
+    opts.verbose > 0 && _print_header()
+    opts.verbose > 0 && _print_row(0, Jval, hk, delta, NaN, cnt)
+
+    converged = false; stalled = false; iter = 0
+    while iter < opts.maxit
+        if hk <= opts.htol && hok                       # certified: h_k prox converged
+            converged = true; break
+        end
+        if delta <= eps(T) * max(one(T), spnorm(X, bw.x))   # radius collapsed below iterate precision
+            stalled = true; break
+        end
+        iter += 1
+        pRed, worstpg, Jtrial = _trial_step!(prob, opts, psi, model, bw, sval, nval, delta, cnt)
+        ared = Jval - Jtrial                            # exact reference (uses prob.F, not the inexact map)
+        cred, credbound = computed_reduction(oracle, ared, pRed, iter)
+        rho, flag = analyze_ratio_red(cred, pRed, Jval, opts.trsafe * eps(T))
+        push_record!(oracle, iter, hk, delta, pRed, ared, cred, credbound)
+        if _accept_decision(rho, flag, worstpg, opts)   # reject
+            delta = opts.gamma1 * delta
+            # The inexact data tolerances depend on Δ, so rebuild at the same x.
+            hk, hok = _refresh_inexact!(prob, opts, psi, model, oracle, imap, bw, hk, delta, cnt)
+            sval = value(prob.f, bw.x); nval = value(psi, bw.x); cnt.nfval += 1; cnt.npsi += 1
+        else                                            # accept
+            copyto!(bw.x, bw.xtrial); Jval = Jtrial
+            rho >= opts.eta2 && (delta = min(opts.gamma3 * delta, opts.deltamax))
+            hk, hok = _refresh_inexact!(prob, opts, psi, model, oracle, imap, bw, hk, delta, cnt)
+            sval = value(prob.f, bw.x); nval = value(psi, bw.x); cnt.nfval += 1; cnt.npsi += 1
+        end
+        # ζ_k -> 0 advances every outer iteration (the paper requires it over
+        # iterations, not over accepted steps).
+        oracle.zeta_k *= oracle.zfactor
+        opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
+    end
+    return TRResult{T,Vector{T}}(bw.x, Jval, hk, iter, converged, _final_status(converged, hok, stalled), cnt)
+end
+
 """
     solve(prob, x0; opts, oracle=nothing) -> TRResult
 
@@ -147,207 +352,33 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                opts::TROptions{T}=TROptions{T}(),
                oracle::Union{Nothing,InexactOracle{T}}=nothing) where {T}
     X = prob.X; Y = prob.Y
-    n = length(x0)
-    m = rangedim(prob.F)
-    inexact = oracle !== nothing
-    inexact && opts.delta0 <= 0 &&
-        throw(ArgumentError("inexact solve requires opts.delta0 > 0"))
-    # Condition 2 requires 0 < eta < min(eta1, 1 - eta2).
-    inexact && !(zero(T) < oracle.eta < min(opts.eta1, one(T) - opts.eta2)) &&
-        throw(ArgumentError("InexactOracle eta must satisfy 0 < eta < min(eta1, 1-eta2)"))
-    # The model linearization uses an InexactMap (perturbed F) when inexact;
-    # prob.F is never replaced, so objective_value! keeps the exact reference.
-    imap = inexact ? InexactMap(prob.F, n) : nothing
-    Fmodel = inexact ? imap : prob.F
-    psi = PsiModel(prob.phi, prob.A, Fmodel, X, Y, n; opts=opts.dualspg)
-    # Curvature model adds (theta_k, F''(x_k) ·) to B_k, with theta_k frozen from the
-    # stationarity prox each iteration; F'' is taken from the exact F (Condition 1
-    # bounds g_k/b_k/A_k, not the Hessian — Fmodel's F'' delegates to the exact F).
-    model = opts.use_curvature ? QuadraticModel(prob.f, Fmodel, X, Y, n, m) :
-                                 QuadraticModel(prob.f, X, n)
+    n = length(x0); m = rangedim(prob.F)
+    if oracle !== nothing
+        opts.delta0 <= 0 && throw(ArgumentError("inexact solve requires opts.delta0 > 0"))
+        # Condition 2 requires 0 < eta < min(eta1, 1 - eta2).
+        !(zero(T) < oracle.eta < min(opts.eta1, one(T) - opts.eta2)) &&
+            throw(ArgumentError("InexactOracle eta must satisfy 0 < eta < min(eta1, 1-eta2)"))
+    end
+    bw = _SolveBuffers(T, x0, m)
     cnt = Counters()
-
-    x      = copyto!(zeros(T, n), x0)
-    xtrial = zeros(T, n)
-    gcoord = zeros(T, n)
-    dg     = zeros(T, n)
-    s      = zeros(T, n)     # Cauchy step
-    step   = zeros(T, n)     # hstat step
-    pgiter = zeros(T, n)
-    px     = zeros(T, n)     # dcauchy trial iterate
-    dwa    = zeros(T, n)
-    dwa1   = zeros(T, n)
-    gmodc  = zeros(T, n)     # SPG improver scratch
-    gmodp  = zeros(T, n)
-    Fbuf   = zeros(T, m)
-
-    # Refresh the model data at `x` for radius `delta` and return (h_k, hok). Exact:
-    # one pass. Inexact: warm-started fixed point that injects (g_k, A_k, b_k) at
-    # tolerances kappa·min(h_k, Δ[^2]) and refines h_k, followed by a POSTCONDITION
-    # injection consistent with the final h_k. The postcondition guarantees the data
-    # used by the model/steps satisfies Condition 1 against the REPORTED h_k for any
-    # kappa (the fixed point — a contraction only for kappa < 1 — just improves the
-    # h_k estimate; correctness of the contract does not depend on its convergence).
-    function refresh!(x, delta, hk0)
-        if !inexact
-            gradient!(gcoord, prob.f, x); cnt.ngrad += 1
-            riesz!(dg, X, gcoord)
-            setmodel!(model, x, gcoord)
-            reanchor!(psi, x)
-            hk, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
-            freeze_curvature!(model, psi.theta)         # theta_k from the stationarity prox
-            return hk, hok
-        end
-        hk = hk0; hok = false
-        for _ in 1:10
-            set_tols!(oracle, hk, delta)
-            inject_gradient!(gcoord, oracle, X, x); cnt.ngrad += 1
-            inject_linearization!(imap, oracle, X, Y, x)
-            riesz!(dg, X, gcoord)
-            setmodel!(model, x, gcoord)
-            reanchor!(psi, x)                           # b_k = F(x) + e_b via imap
-            hknew, hok = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
-            done = abs(hknew - hk) <= T(1e-3) * max(hknew, eps(T))
-            hk = hknew
-            done && break
-        end
-        # Postcondition: inject data consistent with the fixed-point h_k so the
-        # model/steps satisfy Condition 1 against it; then recompute the metric for
-        # THAT final model and return a conservative certified value max(hk, hpost)
-        # (so the reported metric dominates the final model's true stationarity and
-        # cannot falsely certify convergence). Condition 1 still holds because the
-        # data error <= kappa·min(hk, Δ) <= kappa·min(max(hk,hpost), Δ).
-        set_tols!(oracle, hk, delta)
-        inject_gradient!(gcoord, oracle, X, x); cnt.ngrad += 1
-        inject_linearization!(imap, oracle, X, Y, x)
-        riesz!(dg, X, gcoord)
-        setmodel!(model, x, gcoord)
-        reanchor!(psi, x)
-        hpost, okpost = hstat!(step, pgiter, psi, X, x, dg, opts.t0, cnt)
-        oracle.hpost = hpost
-        freeze_curvature!(model, psi.theta)             # theta_k from the stationarity prox
-        return max(hk, hpost), hok && okpost
+    # Function barrier: construct the branch-specific psi/model/imap concretely, then
+    # dispatch once to a typed kernel so the outer loop never dynamically dispatches
+    # on a union-typed psi/model/oracle/imap.
+    if oracle === nothing
+        psi = PsiModel(prob.phi, prob.A, prob.F, X, Y, n; opts=opts.dualspg)
+        model = opts.use_curvature ? QuadraticModel(prob.f, prob.F, X, Y, n, m) :
+                                     QuadraticModel(prob.f, X, n)
+        return _solve_exact!(prob, opts, psi, model, bw, cnt)
+    else
+        # The model linearization uses an InexactMap (perturbed F); prob.F is never
+        # replaced, so objective_value! keeps the exact reference. Curvature's F''
+        # delegates to the exact F (Condition 1 bounds g_k/b_k/A_k, not the Hessian).
+        imap = InexactMap(prob.F, n)
+        psi = PsiModel(prob.phi, prob.A, imap, X, Y, n; opts=opts.dualspg)
+        model = opts.use_curvature ? QuadraticModel(prob.f, imap, X, Y, n, m) :
+                                     QuadraticModel(prob.f, X, n)
+        return _solve_inexact!(prob, opts, psi, model, oracle, imap, bw, cnt)
     end
-
-    # --- Initialize at x_1 ---
-    delta = opts.delta0 > 0 ? opts.delta0 : zero(T)     # finalized below for exact
-    hk, hok = refresh!(x, delta, opts.delta0 > 0 ? opts.delta0 : one(T))
-    sval = value(prob.f, x)                             # f(x_1) (exact; cancels in pRed)
-    nval = value(psi, x)                                # model nonsmooth at the anchor
-    cnt.nfval += 1; cnt.npsi += 1
-    Jval = inexact ? objective_value!(Fbuf, prob, x) : sval + nval   # exact true J(x_1)
-    inexact && (cnt.nfval += 1)
-    # Auto initial radius (delta0 <= 0): use a data-driven scale that accounts for
-    # NONSMOOTH stationarity, not just the smooth gradient. With f = 0 (or any
-    # grad f(x_1) = 0) and an active risk/phi term, spnorm(X, dg) = 0 would give a
-    # zero radius that false-stalls on iteration 1; the prox-gradient step (held in
-    # `step` after the initial hstat! inside refresh!) has norm t0*h_k > 0 whenever
-    # the nonsmooth term moves the iterate. Both zero => x is already
-    # prox-stationary, which the convergence/stall/status logic handles (reporting
-    # :prox_failure if the prox was unreliable); the one(T) fallback applies ONLY
-    # when the prox certified (hok), so it never masks a failed prox certification.
-    if !inexact && opts.delta0 <= 0
-        delta = max(spnorm(X, dg), spnorm(X, step))
-        iszero(delta) && hok && (delta = one(T))
-    end
-
-    opts.verbose > 0 && _print_header()
-    opts.verbose > 0 && _print_row(0, Jval, hk, delta, NaN, cnt)
-
-    converged = false
-    stalled = false
-    iter = 0
-    while iter < opts.maxit
-        # Certified convergence requires the h_k-defining prox to have converged.
-        if hk <= opts.htol && hok
-            converged = true
-            break
-        end
-        # Stall guard: if the radius has collapsed below the precision of the
-        # iterate, no representable step can make further progress (this happens
-        # when the achievable stationarity floor is above htol, e.g. with large
-        # inexactness). Stop instead of spinning to maxit.
-        if delta <= eps(T) * max(one(T), spnorm(X, x))
-            stalled = true
-            break
-        end
-        iter += 1
-
-        # Cauchy step (model anchored/frozen at current x). `worstpg` is the worst
-        # dual-SPG residual among the step's proxes (0 for exact proxes).
-        _, svalc, nvalc, _, worstpg = dcauchy!(s, model, psi, X, x, dg, delta,
-                                               opts.alpha0, sval, nval, px, dwa, dwa1,
-                                               cnt, opts.cauchy)
-        @. xtrial = x + s
-        if opts.subsolver === :spg
-            # Improve the Cauchy point with spectral proximal-gradient steps; the
-            # model value only decreases, so the fraction-of-Cauchy-decrease holds.
-            svalc, nvalc, wpg = dspg!(xtrial, model, psi, X, x, gcoord, delta,
-                                      svalc, nvalc, gmodc, gmodp, step, pgiter, dwa, px,
-                                      cnt, opts.spg)
-            worstpg = max(worstpg, wpg)
-        end
-        pRed = (sval + nval) - (svalc + nvalc)          # model decrease m_k(x) - m_k(x+s)
-
-        # Exact reference reduction (the truth uses prob.F, never the inexact map).
-        Jtrial = objective_value!(Fbuf, prob, xtrial); cnt.nfval += 1
-        ared = Jval - Jtrial
-        # The accept/reject decision uses the COMPUTED reduction: exact ared in the
-        # exact case; cred = ared + bounded error (Condition 2) in the inexact case.
-        if inexact
-            cred, credbound = computed_reduction(oracle, ared, pRed, iter)
-            rho, flag = analyze_ratio_red(cred, pRed, Jval, opts.trsafe * eps(T))
-            push_record!(oracle, iter, hk, delta, pRed, ared, cred, credbound)
-        else
-            cred = ared
-            rho, flag = analyze_ratio_red(ared, pRed, Jval, opts.trsafe * eps(T))
-        end
-
-        # Graded prox-reliability policy:
-        #  * A step whose proxes merely missed the dual-SPG tol by a little
-        #    (worstpg <= step_prox_tol) is judged on its true rho — pRed/cred are
-        #    evaluated at the point actually reached. (Force-rejecting these caused
-        #    a death spiral on hard CVaR duals that converge just shy of tol.)
-        #  * A grossly unreliable step (worstpg > step_prox_tol) is rejected and,
-        #    being rejected, cannot grow the radius.
-        # Otherwise reject on nonpositive/NaN predicted reduction (flags >=
-        # NPOSPREDPOS) or insufficient ratio; POSPREDNEG is accepted, matching ROL.
-        # Certified convergence still requires the h_k-defining prox to converge.
-        gross = worstpg > opts.step_prox_tol
-        reject = gross || flag >= TR_NPOSPREDPOS || (rho < opts.eta1 && flag == TR_SUCCESS)
-        if reject
-            delta = opts.gamma1 * delta                 # paper rule (gamma1=gamma2);
-                                                        # ROL uses gamma1*min(snorm,delta)
-            if inexact
-                # The inexact data tolerances depend on Δ (Condition 1), so the data
-                # must be rebuilt at the same x for the shrunken radius.
-                hk, hok = refresh!(x, delta, hk)
-                sval = value(prob.f, x); nval = value(psi, x)
-                cnt.nfval += 1; cnt.npsi += 1
-            end
-        else                                            # accept
-            copyto!(x, xtrial)
-            Jval = Jtrial
-            if rho >= opts.eta2
-                delta = min(opts.gamma3 * delta, opts.deltamax)
-            end
-            hk, hok = refresh!(x, delta, hk)            # re-anchor + inexact data at new x (warm)
-            sval = value(prob.f, x)
-            nval = value(psi, x)
-            cnt.nfval += 1; cnt.npsi += 1
-        end
-        # Forcing sequence ζ_k -> 0 advances every outer iteration (the paper requires
-        # ζ_k -> 0 over iterations, not over accepted steps).
-        inexact && (oracle.zeta_k *= oracle.zfactor)
-
-        opts.verbose > 0 && _print_row(iter, Jval, hk, delta, rho, cnt)
-    end
-
-    status = converged ? :converged :
-             !hok      ? :prox_failure :   # unreliable stationarity prox dominates
-             stalled   ? :stalled :
-                         :maxiter
-    return TRResult{T,Vector{T}}(x, Jval, hk, iter, converged, status, cnt)
 end
 
 function _print_header()
