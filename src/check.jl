@@ -22,7 +22,7 @@ function check_gradient(f::SmoothObjective, x, v)
     exact = apply(g, v)
     Th = eltype(x)
     xp = similar(x)
-    minerr = Inf
+    minerr = Th(Inf)
     for h0 in _FD_STEPS
         h = Th(h0)
         @. xp = x + h * v
@@ -47,7 +47,7 @@ function check_hessvec(f::SmoothObjective, x, v)
     gm = similar(x)
     xp = similar(x)
     fd = similar(x)
-    minerr = Inf
+    minerr = Th(Inf)
     for h0 in _FD_STEPS
         h = Th(h0)
         @. xp = x + h * v
@@ -73,7 +73,7 @@ function check_jacobian(F::VectorMap{T}, x, v) where {T}
     fp = Vector{T}(undef, rangedim(F))
     fm = similar(fp)
     xp = similar(x)
-    minerr = Inf
+    minerr = Th(Inf)
     for h0 in _FD_STEPS
         h = Th(h0)
         @. xp = x + h * v
