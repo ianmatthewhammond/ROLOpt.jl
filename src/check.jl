@@ -6,6 +6,9 @@
 # Each `check_*` returns the minimum error over a range of step sizes, so tests
 # can assert it is small.
 
+# Template step sizes; each check_* converts them to the iterate's element type
+# (`eltype(x)`) so the finite differences run in the working precision rather than
+# silently promoting through Float64 (matters under BigFloat / Float32).
 const _FD_STEPS = (1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
 
 """
@@ -17,9 +20,11 @@ difference of `t -> f(x + t v)`.
 function check_gradient(f::SmoothObjective, x, v)
     g = gradient(f, x)
     exact = apply(g, v)
+    Th = eltype(x)
     xp = similar(x)
     minerr = Inf
-    for h in _FD_STEPS
+    for h0 in _FD_STEPS
+        h = Th(h0)
         @. xp = x + h * v
         fp = value(f, xp)
         @. xp = x - h * v
@@ -37,12 +42,14 @@ Compares `∇²f(x) v` against a central finite difference of `∇f` along `v`.
 """
 function check_hessvec(f::SmoothObjective, x, v)
     hv = hessVec(f, v, x)
+    Th = eltype(x)
     gp = similar(x)
     gm = similar(x)
     xp = similar(x)
     fd = similar(x)
     minerr = Inf
-    for h in _FD_STEPS
+    for h0 in _FD_STEPS
+        h = Th(h0)
         @. xp = x + h * v
         gradient!(gp, f, xp)
         @. xp = x - h * v
@@ -62,11 +69,13 @@ Compares `F'(x) v` against a central finite difference of `F` along `v`.
 function check_jacobian(F::VectorMap{T}, x, v) where {T}
     Jv = mapvalue(F, x)
     applyJacobian!(Jv, F, v, x)
+    Th = eltype(x)
     fp = Vector{T}(undef, rangedim(F))
     fm = similar(fp)
     xp = similar(x)
     minerr = Inf
-    for h in _FD_STEPS
+    for h0 in _FD_STEPS
+        h = Th(h0)
         @. xp = x + h * v
         value!(fp, F, xp)
         @. xp = x - h * v

@@ -15,5 +15,6 @@ using Random
     include("test_improver.jl")
     include("test_inexact.jl")
     include("test_curvature.jl")
+    include("test_precision.jl")
     include("test_perf.jl")
 end

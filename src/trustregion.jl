@@ -71,7 +71,7 @@ analyze_ratio(fold::T, ftrial::T, pRed::T, epsi::T) where {T} =
 
 """Trust-region options (defaults follow the paper's Numerics section)."""
 struct TROptions{T}
-    delta0::T        # initial radius (<=0 => use ‖g_1‖)
+    delta0::T        # initial radius (<=0 => auto: max(‖g_1‖, ‖prox-grad step‖))
     deltamax::T
     eta1::T          # acceptance threshold
     eta2::T          # radius-growth threshold
