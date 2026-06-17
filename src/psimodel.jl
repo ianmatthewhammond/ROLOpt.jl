@@ -21,9 +21,13 @@
 # Blueprint: ROL_TypeP_SpectralGradientAlgorithm_Def.hpp (nonmonotone BB SPG with
 # the safeguarded quadratic-interpolation line search) + paper Algorithm 2.
 
-"""Diagnostics returned by the dual spectral projected gradient (Algorithm 2)."""
-struct DualSPGResult{T,VY<:AbstractVector{T}}
-    theta::VY        # dual solution
+"""
+Status returned by the dual spectral projected gradient (Algorithm 2). `isbits`,
+so returning it from `prox!` allocates nothing. The optimal dual is NOT carried
+here — `prox!` leaves it in `psi.theta`; a caller needing a snapshot across a
+later `prox!` must `copy(psi.theta)` first.
+"""
+struct DualSPGResult{T}
     iters::Int       # outer dual-SPG iterations
     pgnorm::T        # final projected-gradient norm ||s||_Y / gamma
     converged::Bool  # false if the iteration cap was hit
@@ -45,16 +49,40 @@ end
 struct PsiWorkspace{T,VX<:AbstractVector{T},VY<:AbstractVector{T}}
     w::VX; adjp::VX; pcur::VX; ptrial::VX; dz::VX; xtmp::VX; teff::VX  # X primal
     adj::VX                                                           # X coord (Aᵀ(M_Y theta))
+    qadj::VX                                                          # X scratch for the QuadraticMap adjoint gemv
     ell::VY                                                           # Y (value() scratch)
     mu::VY; mutrial::VY; s::VY; sprev::VY; muprev::VY                 # Y
     tmptheta::VY; thetatrial::VY; ytmp::VY                            # Y (ytmp = M_Y theta)
-    dq::Vector{T}                                                     # nonmonotone d-memory
+    dq::Vector{T}                                                     # nonmonotone d-memory ring (length = memory)
+    dqn::Base.RefValue{Int}                                          # valid ring entries, 0..memory
+    dqpos::Base.RefValue{Int}                                        # last write slot, 0 then 1..memory cycling
 end
-function PsiWorkspace(::Type{T}, n::Integer, m::Integer) where {T}
+function PsiWorkspace(::Type{T}, n::Integer, m::Integer, memory::Integer) where {T}
     vx() = zeros(T, n)
     vy() = zeros(T, m)
-    PsiWorkspace{T,Vector{T},Vector{T}}(vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(),
-        vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), T[])
+    PsiWorkspace{T,Vector{T},Vector{T}}(vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(), vx(),
+        vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(), vy(),
+        zeros(T, max(Int(memory), 1)), Ref(0), Ref(0))
+end
+
+# Fixed-capacity nonmonotone d-memory ring (no push!/popfirst!/view allocations).
+@inline _dq_reset!(ws::PsiWorkspace) = (ws.dqn[] = 0; ws.dqpos[] = 0; ws)
+@inline function _dq_push!(ws::PsiWorkspace, d)
+    m = length(ws.dq)
+    pos = ws.dqpos[] % m + 1                  # 1..m cycling
+    ws.dqpos[] = pos
+    @inbounds ws.dq[pos] = d
+    ws.dqn[] = min(ws.dqn[] + 1, m)
+    return ws
+end
+# min over the active entries — valid slots are 1..dqn[] (sequential before wrap;
+# all m once dqn[] == m), so a plain min loop over 1:dqn[] is exact and alloc-free.
+@inline function _dq_min(ws::PsiWorkspace{T}) where {T}
+    @inbounds r = ws.dq[1]
+    @inbounds for k in 2:ws.dqn[]
+        ws.dq[k] < r && (r = ws.dq[k])
+    end
+    return r
 end
 
 """
@@ -81,7 +109,7 @@ function PsiModel(phi::ProxObjective{T}, A::RiskEnvelope{T}, F::VectorMap{T},
     m = rangedim(F)
     xk = zeros(T, n); bk = zeros(T, m); theta = zeros(T, m)
     initdual!(theta, A)
-    ws = PsiWorkspace(T, n, m)
+    ws = PsiWorkspace(T, n, m, opts.memory)
     PsiModel{T,typeof(phi),typeof(A),typeof(F),typeof(X),typeof(Y),Vector{T},Vector{T}}(
         phi, A, F, X, Y, xk, bk, theta, opts, ws)
 end
@@ -108,7 +136,7 @@ end
 function _dual_d!(psi::PsiModel{T}, z, t, theta, pbuf, mubuf) where {T}
     ws = psi.ws
     metric!(ws.ytmp, psi.Y, theta)                       # M_Y theta (coord Y)
-    applyAdjointJacobian!(ws.adj, psi.F, ws.ytmp, psi.xk) # Aᵀ (M_Y theta) (coord X)
+    applyAdjointJacobian!(ws.adj, psi.F, ws.ytmp, psi.xk, ws.qadj) # Aᵀ (M_Y theta) (coord X)
     riesz!(ws.adjp, psi.X, ws.adj)                        # A_k^* theta (primal X)
     @. ws.w = z - t * ws.adjp
     proxX!(pbuf, psi.phi, psi.X, ws.w, t, ws.teff)       # p = prox^X_{t phi}(...)
@@ -120,13 +148,15 @@ function _dual_d!(psi::PsiModel{T}, z, t, theta, pbuf, mubuf) where {T}
     return quad + value(psi.phi, pbuf) + inner(psi.Y, theta, mubuf)
 end
 
-# prox_{t psi}(z) via Algorithm 2.  Writes the primal prox into `out`.
+# prox_{t psi}(z) via Algorithm 2.  Writes the primal prox into `out` and returns
+# an isbits `DualSPGResult` (status only). The optimal dual is left in `psi.theta`
+# (warm-start cache); snapshot it with `copy(psi.theta)` before the next `prox!`.
 function prox!(out, psi::PsiModel{T}, z, t) where {T}
     ws = psi.ws; o = psi.opts; A = psi.A; Y = psi.Y
     theta = psi.theta
     project!(theta, A, Y, theta)                          # feasible warm start
     dcur = _dual_d!(psi, z, t, theta, ws.pcur, ws.mu)     # mu = grad d(theta)
-    empty!(ws.dq); push!(ws.dq, dcur)
+    _dq_reset!(ws); _dq_push!(ws, dcur)
     gamma = clamp(one(T) / max(spnorm(Y, ws.mu), eps(T)), o.gmin, o.gmax)
     lamprev = o.lam0
     pgnorm = T(Inf); converged = false; nit = 0
@@ -150,7 +180,7 @@ function prox!(out, psi::PsiModel{T}, z, t) where {T}
             converged = true; break
         end
         # nonmonotone line search for lambda in (0, 1]
-        dref = minimum(ws.dq)
+        dref = _dq_min(ws)
         lam = o.lam0
         @. ws.thetatrial = theta + lam * ws.s
         dtrial = _dual_d!(psi, z, t, ws.thetatrial, ws.ptrial, ws.mutrial)
@@ -172,11 +202,8 @@ function prox!(out, psi::PsiModel{T}, z, t) where {T}
         copyto!(ws.pcur, ws.ptrial)
         copyto!(ws.mu, ws.mutrial)
         dcur = dtrial
-        push!(ws.dq, dcur)
-        while length(ws.dq) > o.memory
-            popfirst!(ws.dq)
-        end
+        _dq_push!(ws, dcur)
     end
     copyto!(out, ws.pcur)
-    return DualSPGResult{T,Vector{T}}(copyto!(similar(theta), theta), nit, pgnorm, converged)
+    return DualSPGResult{T}(nit, pgnorm, converged)
 end

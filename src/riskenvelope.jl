@@ -111,6 +111,15 @@ function suppA(A::ConvexCombinationEnvelope{T}, Y::HilbertSpace, y) where {T}
     w = proxweights(Y)
     n = length(y)
     val = zero(T); budget = one(T) - l            # budget = 1 - Σ pᵢ l = 1 - l
+    # NOTE (Phase 3): the water-filling needs an ordering, so this evaluation
+    # allocates `dens` (n) + the `sortperm` permutation — a BOUNDED O(n) + O(n log n)
+    # allocation per call. It runs in `value(psi,·)` on the Cauchy/SPG model-value
+    # path, so CVaR model evaluations are NOT zero-allocation (unlike box envelopes).
+    # The envelope is deliberately kept immutable/reentrant (shared across solves);
+    # making this alloc-free would require threading caller scratch through the
+    # RiskEnvelope `suppA` interface, deferred. The dual-SPG inner kernels remain
+    # alloc-free because `_dual_d!` uses `applyJacobian!`/`proxX!`/`project!`, not
+    # `suppA`. The @allocated guards therefore target box (Interval) envelopes.
     dens = Vector{T}(undef, n)
     @inbounds for i in 1:n
         wi = w === nothing ? one(T) : w[i]
@@ -129,40 +138,53 @@ function suppA(A::ConvexCombinationEnvelope{T}, Y::HilbertSpace, y) where {T}
     return val
 end
 
+# g(nu) = Σ pᵢ clamp(yᵢ + nu·(pᵢ/wᵢ), l, u) - 1, the projection budget residual
+# (continuous, nondecreasing in nu). Module-level + dispatched on the weights so
+# project! stays a closure-free, allocation-free bisection (it runs in the dual-SPG
+# inner loop). `w === nothing` is the Euclidean (probability-weighted shift) case.
+@inline function _cc_budget(p, ::Nothing, y, l::T, u::T, nu::T) where {T}
+    s = zero(T)
+    @inbounds @simd for i in eachindex(y)
+        s += p[i] * clamp(y[i] + nu * p[i], l, u)
+    end
+    return s - one(T)
+end
+@inline function _cc_budget(p, w::AbstractVector, y, l::T, u::T, nu::T) where {T}
+    s = zero(T)
+    @inbounds @simd for i in eachindex(y)
+        s += p[i] * clamp(y[i] + nu * (p[i] / w[i]), l, u)
+    end
+    return s - one(T)
+end
+
 function project!(out, A::ConvexCombinationEnvelope{T}, Y::HilbertSpace, y) where {T}
     p = A.probs
     w = proxweights(Y)
     l = A.l; u = A.u
-    # g(nu) = Σ pᵢ clamp(yᵢ + nu pᵢ/wᵢ, l, u) - 1, monotone increasing in nu.
-    @inline ratio(i) = w === nothing ? p[i] : p[i] / @inbounds(w[i])
-    function gval(nu)
-        s = zero(T)
-        @inbounds @simd for i in eachindex(y)
-            s += p[i] * clamp(y[i] + nu * ratio(i), l, u)
-        end
-        return s - one(T)
-    end
-    # Bracket the root, then bisect (g is continuous, nondecreasing, and onto a
-    # neighborhood of 0 since l ≤ 1 ≤ u and Σ pᵢ = 1).
+    # Bracket the root of g(nu) (continuous, nondecreasing, and onto a neighborhood
+    # of 0 since l ≤ 1 ≤ u and Σ pᵢ = 1), then bisect.
     nlo = zero(T); nhi = zero(T)
-    glo = gval(nlo)
-    if glo > zero(T)
-        nhi = nlo; ghi = glo; nlo = -one(T)
-        glo = gval(nlo)
-        while glo > zero(T); nlo *= 2; glo = gval(nlo); end
+    if _cc_budget(p, w, y, l, u, nlo) > zero(T)
+        nhi = nlo; nlo = -one(T)
+        while _cc_budget(p, w, y, l, u, nlo) > zero(T); nlo *= 2; end
     else
-        nhi = one(T); ghi = gval(nhi)
-        while ghi < zero(T); nhi *= 2; ghi = gval(nhi); end
+        nhi = one(T)
+        while _cc_budget(p, w, y, l, u, nhi) < zero(T); nhi *= 2; end
     end
     for _ in 1:200
         nu = (nlo + nhi) / 2
-        g = gval(nu)
-        if g > zero(T); nhi = nu; else; nlo = nu; end
+        if _cc_budget(p, w, y, l, u, nu) > zero(T); nhi = nu; else; nlo = nu; end
         nhi - nlo <= eps(T) * max(one(T), abs(nhi)) && break
     end
     nu = (nlo + nhi) / 2
-    @inbounds @simd for i in eachindex(y)
-        out[i] = clamp(y[i] + nu * ratio(i), l, u)
+    if w === nothing
+        @inbounds @simd for i in eachindex(y)
+            out[i] = clamp(y[i] + nu * p[i], l, u)
+        end
+    else
+        @inbounds @simd for i in eachindex(y)
+            out[i] = clamp(y[i] + nu * (p[i] / w[i]), l, u)
+        end
     end
     return out
 end

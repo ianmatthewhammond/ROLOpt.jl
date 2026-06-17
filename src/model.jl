@@ -30,20 +30,21 @@ struct QuadraticModel{T,SO,SX,VX,FM,SY,VY}
     Y::SY            # Y Hilbert space (for the metric on the frozen dual), or `nothing`
     theta::VY        # frozen METRIC dual M_Y·theta_k (Y-length, coord), or empty
     htmp::VX         # scratch for the F'' contribution (coord X), or empty
+    htmp2::VX        # scratch for the F'' adjoint gemv (coord X), or empty
 end
 
 # Default: f-only model (no F'' term).
 function QuadraticModel(f::SmoothObjective{T}, X::HilbertSpace{T}, n::Integer) where {T}
     e = T[]
     QuadraticModel{T,typeof(f),typeof(X),Vector{T},Nothing,Nothing,Vector{T}}(
-        f, X, zeros(T, n), zeros(T, n), nothing, nothing, e, e)
+        f, X, zeros(T, n), zeros(T, n), nothing, nothing, e, e, e)
 end
 
 # Curvature model: B_k includes (theta_k, F''(x_k) ·)_Y; m = dim(Y).
 function QuadraticModel(f::SmoothObjective{T}, F::VectorMap{T}, X::HilbertSpace{T},
                         Y::HilbertSpace{T}, n::Integer, m::Integer) where {T}
     QuadraticModel{T,typeof(f),typeof(X),Vector{T},typeof(F),typeof(Y),Vector{T}}(
-        f, X, zeros(T, n), zeros(T, n), F, Y, zeros(T, m), zeros(T, n))
+        f, X, zeros(T, n), zeros(T, n), F, Y, zeros(T, m), zeros(T, n), zeros(T, n))
 end
 
 """
@@ -82,7 +83,7 @@ modelhessvec!(out, m::QuadraticModel{T,SO,SX,VX,Nothing}, v) where {T,SO,SX,VX} 
     hessVec!(out, m.f, v, m.xk)
 function modelhessvec!(out, m::QuadraticModel{T,SO,SX,VX,<:VectorMap}, v) where {T,SO,SX,VX}
     hessVec!(out, m.f, v, m.xk)                          # ∇²f(x_k) v
-    applyAdjointHessian!(m.htmp, m.F, m.theta, v, m.xk)  # (theta_k, F''(x_k) v)_Y  (m.theta = M_Y·theta_k)
+    applyAdjointHessian!(m.htmp, m.F, m.theta, v, m.xk, m.htmp2)  # (theta_k, F''(x_k) v)_Y  (m.theta = M_Y·theta_k)
     out .+= m.htmp
     return out
 end

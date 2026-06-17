@@ -81,8 +81,15 @@ abstract type VectorMap{T<:Real} end
 value!(b, F::VectorMap, x) = throw(MethodError(value!, (b, F, x)))
 applyJacobian!(out, F::VectorMap, v, x) = throw(MethodError(applyJacobian!, (out, F, v, x)))
 applyAdjointJacobian!(out, F::VectorMap, theta, x) = throw(MethodError(applyAdjointJacobian!, (out, F, theta, x)))
+# Optional scratch-taking form used on the hot dual path. By default ignore the
+# scratch and dispatch to the 4-arg method; only QuadraticMap needs the buffer
+# (to keep BLAS gemv accuracy without a per-call temp). AffineMap/InexactMap etc.
+# inherit this fallback and stay allocation-free via their own 4-arg methods.
+applyAdjointJacobian!(out, F::VectorMap, theta, x, scratch) = applyAdjointJacobian!(out, F, theta, x)
 # (theta, F''(x) v) — Phase 2 curvature term; Phase 1 must never call it.
 applyAdjointHessian!(out, F::VectorMap, theta, v, x) = throw(MethodError(applyAdjointHessian!, (out, F, theta, v, x)))
+# Optional scratch-taking form (hot curvature path); default ignores the scratch.
+applyAdjointHessian!(out, F::VectorMap, theta, v, x, scratch) = applyAdjointHessian!(out, F, theta, v, x)
 
 """rangedim(F): dimension of the output space Y."""
 rangedim(F::VectorMap) = throw(MethodError(rangedim, (F,)))
@@ -117,6 +124,10 @@ struct QuadraticMap{T,MQ<:AbstractMatrix{T},MA<:AbstractMatrix{T},V<:AbstractVec
     c::V
 end
 rangedim(F::QuadraticMap) = length(F.c)
+# `dot(view(F.a, j, :), x)` is allocation-free here — the non-escaping row
+# `SubArray` is elided — and uses BLAS's accurate (strided) summation, which a
+# borderline CVaR instance relies on (see test_improver.jl). So value!/applyJacobian!
+# keep it; only the adjoints' reused `similar` temp genuinely allocated.
 function value!(b, F::QuadraticMap{T}, x) where {T}
     @inbounds for j in eachindex(F.c)
         b[j] = dot(x, F.Q[j], x) / 2 + dot(view(F.a, j, :), x) + F.c[j]
@@ -126,33 +137,46 @@ end
 function applyJacobian!(out, F::QuadraticMap{T}, v, x) where {T}
     @inbounds for j in eachindex(F.c)
         # (Qⱼ x + aⱼ) ⋅ v
-        s = dot(view(F.a, j, :), v)
-        s += dot(v, F.Q[j], x)
-        out[j] = s
+        out[j] = dot(view(F.a, j, :), v) + dot(v, F.Q[j], x)
     end
     return out
 end
-function applyAdjointJacobian!(out, F::QuadraticMap{T}, theta, x) where {T}
+# F'(x)ᵀ θ = Σⱼ θⱼ (Qⱼ x + aⱼ). BLAS gemv into the caller-supplied scratch `tmp` (n)
+# then the fused θⱼ·(tmp+aⱼ) — byte-identical to the (allocating) original, but the
+# scratch makes it allocation-free. `_dual_d!` passes `ws.qadj`. BLAS summation is
+# preserved deliberately: a borderline CVaR instance is sensitive to the gemv order
+# (sequential manual sums shift its stationarity floor — see test_improver.jl).
+function applyAdjointJacobian!(out, F::QuadraticMap{T}, theta, x, tmp) where {T}
     fill!(out, zero(T))
-    tmp = similar(out)
-    @inbounds for j in eachindex(F.c)
-        thetaj = theta[j]                      # hoist scalar (avoid broadcast getindex under @.)
-        mul!(tmp, F.Q[j], x)          # Qⱼ x
-        aj = view(F.a, j, :)
-        @. out += thetaj * (tmp + aj)
-    end
-    return out
-end
-function applyAdjointHessian!(out, F::QuadraticMap{T}, theta, v, x) where {T}
-    fill!(out, zero(T))
-    tmp = similar(out)
     @inbounds for j in eachindex(F.c)
         thetaj = theta[j]
-        mul!(tmp, F.Q[j], v)          # Qⱼ v
-        @. out += thetaj * tmp
+        mul!(tmp, F.Q[j], x)                      # Qⱼ x  (BLAS gemv)
+        @simd for i in eachindex(out)
+            out[i] += thetaj * (tmp[i] + F.a[j, i])
+        end
     end
     return out
 end
+# 4-arg convenience / tests: allocate the gemv scratch.
+applyAdjointJacobian!(out, F::QuadraticMap{T}, theta, x) where {T} =
+    applyAdjointJacobian!(out, F, theta, x, similar(out))
+# (θ, F''(x) v) = Σⱼ θⱼ Qⱼ v (F'' independent of x). Same BLAS-into-scratch pattern
+# (`modelhessvec!` passes the curvature model's scratch), kept consistent with the
+# Jacobian adjoint so curvature problems get the same summation accuracy.
+function applyAdjointHessian!(out, F::QuadraticMap{T}, theta, v, x, tmp) where {T}
+    fill!(out, zero(T))
+    @inbounds for j in eachindex(F.c)
+        thetaj = theta[j]
+        mul!(tmp, F.Q[j], v)                      # Qⱼ v  (BLAS gemv)
+        @simd for i in eachindex(out)
+            out[i] += thetaj * tmp[i]
+        end
+    end
+    return out
+end
+# 5-arg convenience / tests: allocate the gemv scratch.
+applyAdjointHessian!(out, F::QuadraticMap{T}, theta, v, x) where {T} =
+    applyAdjointHessian!(out, F, theta, v, x, similar(out))
 
 # ----------------------------------------------------------------------------
 # Proximable convex term phi: X -> (-inf, +inf]   (ROL ProxObjective)

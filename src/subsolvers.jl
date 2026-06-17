@@ -65,6 +65,33 @@ function hstat!(step, pgiter, nobj, X::HilbertSpace, x, dg, t0, cnt::Counters)
     return spnorm(X, step) / t0, ok
 end
 
+# Cauchy-search helpers, hoisted to module scope (NOT closures) so `dcauchy!`
+# infers a concrete return: capturing these locals in nested closures previously
+# boxed sval/nval/snorm (inferred `Tuple{Float64,Any,Any,Any,Float64}`). Each
+# returns this step's dual-SPG residual; the caller folds it into a plain `T`
+# running maximum (no `Ref`, so the kernels stay allocation-free).
+
+# One proximal-gradient step; counts it. Returns this step's dual-SPG residual.
+@inline function _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt::Counters, ::Type{T}) where {T}
+    res = pgstep!(px, s, nobj, x, dg, alpha)
+    countprox!(cnt, res)
+    return spg_pgnorm(res, T)
+end
+
+# Model decrease at `alpha`. Writes s, px; returns (sval,nval,pRed,Qk,snorm,wpg).
+function _cauchy_trystep!(s, px, dwa, model, nobj, X::HilbertSpace{T}, x, dg, alpha,
+                          sold::T, nold::T, half::T, cnt::Counters) where {T}
+    wpg = _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt, T)
+    snorm = spnorm(X, s)
+    modelhessvec!(dwa, model, s); cnt.nhess += 1
+    nval = value(nobj, px); cnt.npsi += 1
+    gs = inner(X, s, dg)
+    sval = sold + gs + half * apply(dwa, s)
+    pRed = (sold + nold) - (sval + nval)
+    Qk = gs + nval - nold
+    return sval, nval, pRed, Qk, snorm, wpg
+end
+
 """
     dcauchy!(s, model, nobj, X, x, dg, del, alpha, sval0, nval0, px, dwa, dwa1, cnt, p) -> (alpha, sval, nval, snorm, worst_pgnorm)
 
@@ -84,38 +111,17 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     half = T(1) / 2
     sold = sval0
     nold = nval0
-    worst = Ref(zero(T))            # worst dual-SPG residual over all proxes here
-
-    # One proximal-gradient step; counts it and tracks the worst prox residual.
-    function pgs(alpha)
-        res = pgstep!(px, s, nobj, x, dg, alpha)
-        countprox!(cnt, res)
-        w = spg_pgnorm(res, T)
-        worst[] = max(worst[], w)
-        return res
-    end
-
-    # Evaluate the model decrease at step length `alpha`. Writes s, px; returns
-    # (sval, nval, pRed, Qk, snorm).
-    function trystep(alpha)
-        pgs(alpha)
-        snorm = spnorm(X, s)
-        modelhessvec!(dwa, model, s); cnt.nhess += 1
-        nval = value(nobj, px); cnt.npsi += 1
-        gs = inner(X, s, dg)
-        sval = sold + gs + half * apply(dwa, s)
-        pRed = (sold + nold) - (sval + nval)
-        Qk = gs + nval - nold
-        return sval, nval, pRed, Qk, snorm
-    end
+    worst = zero(T)                 # worst dual-SPG residual over all proxes here
 
     # Initial step
-    pgs(alpha)
+    worst = max(worst, _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt, T))
     snorm = spnorm(X, s)
     sval = sold; nval = nold; pRed = zero(T); Qk = zero(T)
     interp = snorm > del
     if !interp
-        sval, nval, pRed, Qk, snorm = trystep(alpha)
+        sval, nval, pRed, Qk, snorm, wpg =
+            _cauchy_trystep!(s, px, dwa, model, nobj, X, x, dg, alpha, sold, nold, half, cnt)
+        worst = max(worst, wpg)
         interp = pRed < -p.mu0 * Qk
     end
 
@@ -124,26 +130,30 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
         search = true
         while search
             alpha *= p.interpf
-            pgs(alpha)
+            worst = max(worst, _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt, T))
             snorm = spnorm(X, s)
             if snorm <= del
-                sval, nval, pRed, Qk, snorm = trystep(alpha)
+                sval, nval, pRed, Qk, snorm, wpg =
+                    _cauchy_trystep!(s, px, dwa, model, nobj, X, x, dg, alpha, sold, nold, half, cnt)
+                worst = max(worst, wpg)
                 search = (pRed < -p.mu0 * Qk) && (cnt_steps < p.redlim)
             end
             cnt_steps += 1
         end
     else                            # extrapolate: increase alpha while it helps
-        alphas = alpha; mvals = pRed; svals = sval
+        alphas = alpha; mvals = pRed
         copyto!(dwa1, dwa)
         search = true
         while search
             alpha *= p.extrapf
-            pgs(alpha)
+            worst = max(worst, _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt, T))
             snorm = spnorm(X, s)
             if snorm <= del && cnt_steps < p.explim
-                sval, nval, pRed, Qk, snorm = trystep(alpha)
+                sval, nval, pRed, Qk, snorm, wpg =
+                    _cauchy_trystep!(s, px, dwa, model, nobj, X, x, dg, alpha, sold, nold, half, cnt)
+                worst = max(worst, wpg)
                 if pRed >= -p.mu0 * Qk && abs(pRed - mvals) > p.qtol * abs(mvals)
-                    copyto!(dwa1, dwa); alphas = alpha; mvals = pRed; svals = sval
+                    copyto!(dwa1, dwa); alphas = alpha; mvals = pRed
                     search = true
                 else
                     search = false
@@ -157,13 +167,13 @@ function dcauchy!(s, model, nobj, X::HilbertSpace{T}, x, dg, del, alpha,
     end
 
     # Finalize at the chosen alpha so s, px, sval, nval are mutually consistent.
-    pgs(alpha)
+    worst = max(worst, _cauchy_pgs!(s, px, nobj, x, dg, alpha, cnt, T))
     snorm = spnorm(X, s)
     modelhessvec!(dwa, model, s); cnt.nhess += 1
     nval = value(nobj, px); cnt.npsi += 1
     gs = inner(X, s, dg)
     sval = sold + gs + half * apply(dwa, s)
-    return alpha, sval, nval, snorm, worst[]
+    return alpha, sval, nval, snorm, worst
 end
 
 """Spectral proximal-gradient improver parameters (defaults from ROL)."""
@@ -191,7 +201,7 @@ function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
     half = T(1) / 2
     safeguard = T(1e2) * eps(T)
     del2 = del * del
-    worst = Ref(zero(T))
+    worst = zero(T)                 # worst dual-SPG residual over all proxes here (no Ref => alloc-free)
 
     # Model gradient at y (coordinate): gmod = ∇f(x_k) + H (y - x_k) = ∇q_k(y).
     @. dx = y - model.xk
@@ -203,7 +213,7 @@ function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
     riesz!(gmodp, X, gmodc)
     lambda = clamp(one(T) / max(spnorm(X, gmodp), eps(T)), p.lambdaMin, p.lambdaMax)
     res = pgstep!(pgi, step, nobj, y, gmodp, lambda)
-    countprox!(cnt, res); worst[] = max(worst[], spg_pgnorm(res, T))
+    countprox!(cnt, res); worst = max(worst, spg_pgnorm(res, T))
     gs = apply(gmodc, step)
     ss = inner(X, step, step)
     gtol = min(p.tol1, p.tol2 * sqrt(ss) / lambda)
@@ -247,10 +257,10 @@ function dspg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
         lambda = clamp((sHs <= safeguard) ? one(T) / max(spnorm(X, gmodp), eps(T)) : ss / sHs,
                        p.lambdaMin, p.lambdaMax)
         res = pgstep!(pgi, step, nobj, y, gmodp, lambda)
-        countprox!(cnt, res); worst[] = max(worst[], spg_pgnorm(res, T))
+        countprox!(cnt, res); worst = max(worst, spg_pgnorm(res, T))
         gs = apply(gmodc, step)
         ss = inner(X, step, step)
         sqrt(ss) / lambda <= gtol && break               # proximal-gradient stationary
     end
-    return sval, nval, worst[]
+    return sval, nval, worst
 end

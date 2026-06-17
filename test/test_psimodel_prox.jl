@@ -52,13 +52,13 @@ end
             thetastar = (lo + hi) / 2
             _, pstar, _ = _indep_dual(F, phi, xk, z, t, [thetastar])
 
-            @test isapprox(res.theta[1], thetastar; atol=1e-5)
+            @test isapprox(psi.theta[1], thetastar; atol=1e-5)
             @test isapprox(out, pstar; atol=1e-6)
 
             # Primal-dual residual: theta_bar fixed under projected ascent.
-            _, p, ell = _indep_dual(F, phi, xk, z, t, res.theta)
+            _, p, ell = _indep_dual(F, phi, xk, z, t, psi.theta)
             @test isapprox(out, p; atol=1e-8)
-            resid = clamp(res.theta[1] + ell[1], 0.0, 1.0) - res.theta[1]
+            resid = clamp(psi.theta[1] + ell[1], 0.0, 1.0) - psi.theta[1]
             @test abs(resid) < 1e-6
         end
     end
@@ -81,8 +81,8 @@ end
             d, _, _ = _indep_dual(F, phi, xk, z, t, [t1, t2])
             if d > best; best = d; thetabest = [t1, t2]; end
         end
-        @test isapprox(res.theta, thetabest; atol=2e-2)   # grid resolution ~1/150
-        _, pbest, _ = _indep_dual(F, phi, xk, z, t, res.theta)
+        @test isapprox(psi.theta, thetabest; atol=2e-2)   # grid resolution ~1/150
+        _, pbest, _ = _indep_dual(F, phi, xk, z, t, psi.theta)
         @test isapprox(out, pbest; atol=1e-8)
     end
 
@@ -96,5 +96,24 @@ end
         z = randn(rng, n); t = 0.7
         out = similar(z); prox!(out, psi, z, t)
         @test isapprox(out, prox(phi, z, t); atol=1e-12)
+    end
+
+    @testset "prox! leaves the dual in psi.theta; snapshot needs a copy" begin
+        # prox! now returns status only (isbits DualSPGResult). The optimal dual is
+        # left in psi.theta and OVERWRITTEN by the next prox!, so a caller that needs
+        # to retain it must copy first. With ZeroProx and A = [0,1], p(theta) =
+        # z - theta*ones and grad d(theta) = sum(z) - n*theta, so the dual maximizer
+        # is theta* = clamp(sum(z)/n, 0, 1) — analytically predictable.
+        n = 3
+        F = AffineMap(ones(1, n), [0.0])
+        psi = PsiModel(ZeroProx{Float64}(), IntervalEnvelope(0.0, 1.0), F, X, Y, n)
+        reanchor!(psi, zeros(n))
+        out = zeros(n)
+        prox!(out, psi, fill(-5.0 / n, n), 1.0)         # sum(z) = -5  => theta* = 0
+        @test isapprox(psi.theta[1], 0.0; atol=1e-8)
+        snap = copy(psi.theta)                          # snapshot BEFORE the next prox!
+        prox!(out, psi, fill(5.0, n), 1.0)              # sum(z) = 5n  => theta* = 1
+        @test isapprox(psi.theta[1], 1.0; atol=1e-8)    # psi.theta overwritten in place
+        @test isapprox(snap[1], 0.0; atol=1e-8)         # the copy retained the first dual
     end
 end
