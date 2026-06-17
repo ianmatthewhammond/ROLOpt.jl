@@ -5,8 +5,10 @@ module ROLOpt
 #
 #     min_x  f(x) + suppA(F(x)) + phi(x)
 #
-# Phase 1: Cauchy-only TR-Risk, exact evaluations, Euclidean spaces. See
-# docs / the plan for the phased roadmap. C++ blueprints from Trilinos ROL
+# Implements the full algorithm: Algorithm 1 (TR-Risk loop, Cauchy or SPG step),
+# Algorithm 2 (dual-SPG prox of psi_k), the risk envelopes, diagonal weighted
+# (mass-matrix / probability) spaces, inexact evaluations (Conditions 1 & 2), and
+# the (theta_k, F'') Lagrangian curvature term. C++ blueprints from Trilinos ROL
 # (TypeP) are cited in each source file.
 
 using LinearAlgebra

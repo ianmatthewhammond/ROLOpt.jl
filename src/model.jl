@@ -4,8 +4,14 @@
 #
 # with g_k the primal gradient and B_k the model Hessian.
 #
-# B_k = HessVec_f                              (default; `F = nothing`)
-# B_k = HessVec_f + (theta_k, F''(x_k) ·)      (curvature; `F` a VectorMap)
+# B_k = HessVec_f                                (default; `F = nothing`)
+# B_k = HessVec_f + (theta_k, F''(x_k) ·)_Y      (curvature; `F` a VectorMap)
+#
+# The curvature term is the x-Hessian of the Lagrangian (theta_k, F(x))_Y, taken in
+# the Y inner product: B_k v gains (theta_k, F''(x_k) v)_Y. Because the coordinate
+# `applyAdjointHessian!` contracts F''(x)v against a coordinate dual, the stored
+# multiplier is the METRIC dual M_Y·theta_k (see freeze_curvature!), so for weighted
+# Y the metric is not dropped (it reduces to theta_k when M_Y = I).
 #
 # Either is a legitimate bounded model Hessian (the convergence theory permits any
 # bounded B_k). With the curvature term, theta_k is a FROZEN dual taken from the

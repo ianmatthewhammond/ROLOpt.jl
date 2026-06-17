@@ -1,6 +1,8 @@
-# Cauchy-only TR-Risk: the main loop (paper Algorithm 1) specialized to the
-# Cauchy-point step. A valid instance of Algorithm 1 (which only requires
-# sufficient model decrease); NCG/SPG improvers are Phase 2.
+# TR-Risk: the main loop (paper Algorithm 1). The trial step is the Cauchy point
+# (`subsolver=:cauchy`) or the Cauchy point improved by spectral proximal-gradient
+# steps (`subsolver=:spg`). Supports inexact evaluations (Conditions 1 & 2, via an
+# `InexactOracle`) and the optional (theta_k, F'') Lagrangian curvature term in B_k
+# (`use_curvature=true`).
 #
 # Blueprint: ROL_TypeP_TrustRegionAlgorithm_Def.hpp::run.
 
@@ -134,9 +136,12 @@ function objective_value!(Fbuf, prob::RiskProblem, x)
 end
 
 """
-    solve(prob, x0; opts) -> TRResult
+    solve(prob, x0; opts, oracle=nothing) -> TRResult
 
-Run Cauchy-only TR-Risk from `x0`.
+Run TR-Risk (paper Algorithm 1) from `x0`. `opts.subsolver` selects the trial step
+(`:cauchy` or `:spg`); `opts.use_curvature` toggles the `(theta_k, F'')` term in
+`B_k`. Passing an `InexactOracle` runs the inexact variant (Conditions 1 & 2),
+keeping `prob.F` as the exact reference for the objective.
 """
 function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                opts::TROptions{T}=TROptions{T}(),
