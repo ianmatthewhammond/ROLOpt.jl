@@ -355,9 +355,9 @@ end
     solve(prob, x0; opts, oracle=nothing) -> TRResult
 
 Run TR-Risk (paper Algorithm 1) from `x0`. `opts.subsolver` selects the trial step
-(`:cauchy` or `:spg`); `opts.use_curvature` toggles the `(theta_k, F'')` term in
-`B_k`. Passing an `InexactOracle` runs the inexact variant (Conditions 1 & 2),
-keeping `prob.F` as the exact reference for the objective.
+(`:cauchy`, `:spg`, or `:ncg`); `opts.use_curvature` toggles the `(theta_k, F'')`
+term in `B_k`. Passing an `InexactOracle` runs the inexact variant (Conditions 1 &
+2), keeping `prob.F` as the exact reference for the objective.
 """
 function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                opts::TROptions{T}=TROptions{T}(),

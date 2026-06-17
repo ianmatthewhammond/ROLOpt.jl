@@ -294,6 +294,10 @@ function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T
     lam = (T(3) - sqrt(T(5))) / 2                         # golden-section parameter
     mu = T(1e-4)
     nold = nval0
+    # Empty interval (tmax <= 0, e.g. the Cauchy point already on the TR boundary):
+    # no feasible positive step. Return early — otherwise t0 = tR = 0 below makes the
+    # quadratic-upper-bound minimizer ((nold-n0)/kappa)/t0 a 0/0 NaN.
+    tmax <= zero(T) && return zero(T), nold
     tL = zero(T); pL = zero(T)
     tR = tmax
     @. pwa = y + tR * s; nR = value(nobj, pwa); cnt.npsi += 1
@@ -451,6 +455,9 @@ function dncg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
         # degenerate/negative root) and guard ss = 0 (a collapsed direction).
         disc = ds * ds + ss * (del2 - snorm0 * snorm0)
         alphaMax = ss > zero(T) ? max(zero(T), (-ds + sqrt(max(disc, zero(T)))) / ss) : zero(T)
+        # alphaMax == 0 means snorm0 >= del (already at the boundary) and s points
+        # outward: no feasible step, so we are done (on the TR boundary).
+        alphaMax <= zero(T) && break
         alpha, nold = dbls!(y, s, lam1, alphaMax, sHs, gs, nobj, pwa5, nold, cnt)
 
         @. y += alpha * s

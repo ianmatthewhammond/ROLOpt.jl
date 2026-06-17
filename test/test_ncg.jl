@@ -82,6 +82,23 @@
         end
     end
 
+    @testset "1-D smooth: outward NCG direction at the TR boundary (dbls! tmax=0)" begin
+        # f = ½x² - 10x (min at x=10), risk inert (A={0}, F=0). A small initial radius
+        # puts the Cauchy point on the TR boundary with the NCG direction pointing
+        # outward => alphaMax = 0 => dbls! receives tmax = 0. Must not NaN, and must
+        # converge like :cauchy/:spg (regression for the 0/0 in the quadratic bound).
+        prob = RiskProblem(DiagonalQuadratic([1.0], [-10.0]), AffineMap(zeros(1, 1), [0.0]),
+                           ZeroProx{Float64}(), IntervalEnvelope(0.0, 0.0))
+        rc = solve(prob, [0.0]; opts=TROptions{Float64}(delta0=1.0, maxit=50, subsolver=:cauchy))
+        rn = solve(prob, [0.0]; opts=TROptions{Float64}(delta0=1.0, maxit=50, subsolver=:ncg))
+        @test rn.converged && rn.status == :converged
+        @test all(isfinite, rn.x) && isfinite(rn.J)
+        @test isapprox(rn.x[1], 10.0; atol=1e-6)
+        @test isapprox(rn.J, rc.J; atol=1e-8)
+        # dbls! with an empty interval returns no step, no NaN.
+        @test dbls!([1.0], [1.0], 0.5, 0.0, 1.0, -1.0, ZeroProx{Float64}(), [0.0], 0.0, Counters()) == (0.0, 0.0)
+    end
+
     @testset ":ncg gross prox failure is rejected, not progress" begin
         n = 3
         F = AffineMap(reshape([1.0, 1.0, 1.0], 1, n), [0.5])   # active risk
