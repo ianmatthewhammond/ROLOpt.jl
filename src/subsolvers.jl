@@ -1,9 +1,11 @@
-# Trust-region subproblem building blocks. Phase 1 ships the proximal-gradient
-# step, the stationarity metric, and the Cauchy point. NCG/SPG improvers
-# (dncg/dspg/dbls/dprox) are Phase 2.
+# Trust-region subproblem building blocks: the proximal-gradient step (`pgstep!`),
+# the stationarity metric (`hstat!`), the Cauchy point (`dcauchy!`), and the two
+# improvers — spectral proximal-gradient (`dspg!`) and nonlinear-CG (`dncg!` +
+# the `dbls!` line search). `dprox` (the Brent TR-radius prox root-find) is not
+# ported: the improvers cap each step at the boundary analytically instead.
 #
 # Blueprint: ROL_TypeP_Algorithm_Def.hpp (pgstep) and
-# ROL_TypeP_TrustRegionAlgorithm_Def.hpp (dcauchy).
+# ROL_TypeP_TrustRegionAlgorithm_Def.hpp (dcauchy / dspg2 / dncg / dbls).
 
 """Evaluation counters (columns mirror the paper's result tables)."""
 mutable struct Counters

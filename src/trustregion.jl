@@ -1,8 +1,10 @@
 # TR-Risk: the main loop (paper Algorithm 1). The trial step is the Cauchy point
-# (`subsolver=:cauchy`) or the Cauchy point improved by spectral proximal-gradient
-# steps (`subsolver=:spg`). Supports inexact evaluations (Conditions 1 & 2, via an
-# `InexactOracle`) and the optional (theta_k, F'') Lagrangian curvature term in B_k
-# (`use_curvature=true`).
+# (`subsolver=:cauchy`), optionally improved by spectral proximal-gradient steps
+# (`subsolver=:spg`) or nonlinear-CG steps (`subsolver=:ncg`). Supports inexact
+# evaluations (Conditions 1 & 2, via an `InexactOracle`) and the optional
+# (theta_k, F'') Lagrangian curvature term in B_k (`use_curvature=true`). The loop
+# runs in a typed kernel (`_solve_exact!` / `_solve_inexact!`) behind a function
+# barrier so it never dynamically dispatches on the model/psi type.
 #
 # Blueprint: ROL_TypeP_TrustRegionAlgorithm_Def.hpp::run.
 
