@@ -115,9 +115,11 @@ function PsiModel(phi::ProxObjective{T}, A::RiskEnvelope{T}, F::VectorMap{T},
         phi, A, F, X, Y, xk, bk, theta, opts, ws)
 end
 
-"""Re-anchor the linearization at `x_k`: sets `x_k` and `b_k = F(x_k)`."""
+"""Re-anchor the linearization at `x_k`: sets `x_k`, runs the `prepare!` hook
+(PDE factorization / cached-Jacobian assembly), then `b_k = F(x_k)`."""
 function reanchor!(psi::PsiModel, xk)
     copyto!(psi.xk, xk)
+    prepare!(psi.F, psi.xk)      # build the frozen linearization at x_k (no-op for plain maps)
     value!(psi.bk, psi.F, xk)
     return psi
 end

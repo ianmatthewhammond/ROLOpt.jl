@@ -16,6 +16,7 @@ using Printf
 
 include("spaces.jl")
 include("objectives.jl")
+include("usermaps.jl")
 include("riskenvelope.jl")
 include("check.jl")
 include("psimodel.jl")
@@ -34,6 +35,9 @@ export VectorMap, AffineMap, QuadraticMap, rangedim, mapvalue
 export ProxObjective, ZeroProx, L1Objective, BoundConstraint, BoxL1Objective
 export value, value!, gradient, gradient!, hessVec, hessVec!
 export applyJacobian!, applyAdjointJacobian!, applyAdjointHessian!, prox, prox!, proxX!
+
+# User-selected F representations (matrix-free / cached Jacobian)
+export OperatorMap, CachedJacobianMap, prepare!, operator_actions_expensive
 
 # Risk envelope
 export RiskEnvelope, IntervalEnvelope, ConvexCombinationEnvelope

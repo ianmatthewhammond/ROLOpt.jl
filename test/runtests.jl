@@ -18,4 +18,5 @@ using Random
     include("test_curvature.jl")
     include("test_precision.jl")
     include("test_perf.jl")
+    include("test_matfree.jl")
 end

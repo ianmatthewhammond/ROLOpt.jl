@@ -91,6 +91,18 @@ applyAdjointHessian!(out, F::VectorMap, theta, v, x) = throw(MethodError(applyAd
 # Optional scratch-taking form (hot curvature path); default ignores the scratch.
 applyAdjointHessian!(out, F::VectorMap, theta, v, x, scratch) = applyAdjointHessian!(out, F, theta, v, x)
 
+# Anchor-change hook. A stateful map (PDE factorization, cached Jacobian) rebuilds
+# its linearization at x_k here; default no-op. Called once per outer anchor by
+# `reanchor!`, BEFORE `value!`. The linearization cache it owns must not be touched
+# by `value!` at trial points (see OperatorMap / CachedJacobianMap, src/usermaps.jl).
+prepare!(F::VectorMap, x) = F
+
+# Representation trait: are this map's operator actions a solve (matrix-free) rather
+# than a cheap gemv (assembled)? Default false (AffineMap/QuadraticMap/cached); true
+# for OperatorMap. Gates the Phase-2 line-search operator reuse.
+operator_actions_expensive(::Type{<:VectorMap}) = false
+operator_actions_expensive(F::VectorMap) = operator_actions_expensive(typeof(F))
+
 """rangedim(F): dimension of the output space Y."""
 rangedim(F::VectorMap) = throw(MethodError(rangedim, (F,)))
 

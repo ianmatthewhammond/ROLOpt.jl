@@ -67,7 +67,10 @@ res.J, res.hk  # objective value and stationarity metric
 
 - `HilbertSpace` / `EuclideanSpace` / `WeightedSpace` — inner product + Riesz map.
 - `SmoothObjective`: `DiagonalQuadratic`, `QuadraticObjective`, `TikhonovObjective`, `ZeroObjective`.
-- `VectorMap` (`F`): `AffineMap`, `QuadraticMap`.
+- `VectorMap` (`F`): `AffineMap`, `QuadraticMap` (explicit); `OperatorMap` (pure
+  matrix-free — user JVP/VJP callbacks, no stored Jacobian); `CachedJacobianMap`
+  (nonlinear `F`, `A_k = F'(x_k)` assembled once per anchor via a `prepare!` hook).
+  You choose the representation; ROLOpt never auto-assembles `A_k`.
 - `ProxObjective` (`phi`): `L1Objective`, `BoundConstraint`, `BoxL1Objective`, `ZeroProx`.
 - `RiskEnvelope`: `IntervalEnvelope` (box), `ConvexCombinationEnvelope` (E + CVaR) — metric-aware support function + projection.
 - `PsiModel` + `prox!` — Algorithm 2 (returns an isbits `DualSPGResult` status; the optimal dual is left in `psi.theta`).

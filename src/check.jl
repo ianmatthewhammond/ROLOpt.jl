@@ -67,6 +67,7 @@ end
 Compares `F'(x) v` against a central finite difference of `F` along `v`.
 """
 function check_jacobian(F::VectorMap{T}, x, v) where {T}
+    prepare!(F, x)                      # assemble/factorize the linearization at x (no-op for plain maps)
     Jv = mapvalue(F, x)
     applyJacobian!(Jv, F, v, x)
     Th = eltype(x)
@@ -93,6 +94,7 @@ Verifies the adjoint (transpose) identity `⟨F'(x) v, theta⟩ = ⟨v, F'(x)* t
 (metric-free coordinate pairing).
 """
 function check_adjoint(F::VectorMap{T}, x, v, theta) where {T}
+    prepare!(F, x)                      # assemble/factorize the linearization at x (no-op for plain maps)
     Jv = Vector{T}(undef, rangedim(F))
     applyJacobian!(Jv, F, v, x)
     Jatheta = similar(x)

@@ -65,6 +65,13 @@ end
 applyAdjointHessian!(out, im::InexactMap, θ, v, x, scratch) =
     applyAdjointHessian!(out, im.F, θ, v, x, scratch)
 
+# Forward the anchor hook and the representation trait to the wrapped exact map, so
+# a matrix-free F keeps its prepare!/factorization and its reuse gating under the
+# inexactness path (where psi.F is the InexactMap, not prob.F).
+prepare!(im::InexactMap, x) = (prepare!(im.F, x); im)
+operator_actions_expensive(::Type{<:InexactMap{T,FM}}) where {T,FM} =
+    operator_actions_expensive(FM)
+
 # ---------------------------------------------------------------------------
 # Audit record for one outer iteration.
 # ---------------------------------------------------------------------------

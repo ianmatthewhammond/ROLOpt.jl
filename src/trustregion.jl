@@ -89,6 +89,8 @@ struct TROptions{T}
     verbose::Int
     subsolver::Symbol  # :cauchy (Cauchy only), :spg (Cauchy + SPG), or :ncg (Cauchy + NCG)
     use_curvature::Bool  # include the (theta_k, F'') curvature term in B_k
+    validate_F::Bool   # run a deterministic adjoint-consistency check on F at solve start
+    validate_tol::T    # relative tolerance for that check
     dualspg::DualSPGOptions{T}
     spg::SpgParams{T}
     ncg::NcgParams{T}
@@ -100,6 +102,7 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       mu0=1e-2, interpf=0.1, extrapf=10, redlim=10, explim=10, qtol=1e-8,
                       trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
                       subsolver::Symbol=:cauchy, use_curvature::Bool=false,
+                      validate_F::Bool=false, validate_tol=1000 * sqrt(eps(T)),
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}(),
                       spg::SpgParams{T}=SpgParams{T}(),
                       ncg::NcgParams{T}=NcgParams{T}()) where {T}
@@ -108,7 +111,8 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
                  T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
-                 Int(maxit), Int(verbose), subsolver, use_curvature, dualspg, spg, ncg)
+                 Int(maxit), Int(verbose), subsolver, use_curvature,
+                 validate_F, T(validate_tol), dualspg, spg, ncg)
 end
 
 """
@@ -361,11 +365,29 @@ Run TR-Risk (paper Algorithm 1) from `x0`. `opts.subsolver` selects the trial st
 term in `B_k`. Passing an `InexactOracle` runs the inexact variant (Conditions 1 &
 2), keeping `prob.F` as the exact reference for the objective.
 """
+# Deterministic adjoint-consistency probe (no Random). The user's VJP must be the
+# bare transpose of the JVP, so ⟨A v, θ⟩ = ⟨v, Aᵀθ⟩ (a transpose-mismatched VJP is
+# O(1) off, relative). Reuses inexact.jl's `_dir` for fixed probe vectors.
+function _validate_F(F::VectorMap{T}, x0, tol) where {T}
+    prepare!(F, x0)
+    n = length(x0); m = rangedim(F)
+    v = _dir(T, n, 1); theta = _dir(T, m, 2)
+    Jv = Vector{T}(undef, m); applyJacobian!(Jv, F, v, x0)
+    Jat = Vector{T}(undef, n); applyAdjointJacobian!(Jat, F, theta, x0)
+    a = dot(Jv, theta); b = dot(v, Jat)
+    rel = abs(a - b) / (abs(a) + one(T))
+    rel > tol && throw(ArgumentError(
+        "validate_F failed: relative adjoint residual $(rel) > $(tol). " *
+        "applyAdjointJacobian! must return the bare transpose Aᵀθ, consistent with applyJacobian!."))
+    return nothing
+end
+
 function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                opts::TROptions{T}=TROptions{T}(),
                oracle::Union{Nothing,InexactOracle{T}}=nothing) where {T}
     X = prob.X; Y = prob.Y
     n = length(x0); m = rangedim(prob.F)
+    opts.validate_F && _validate_F(prob.F, x0, opts.validate_tol)
     if oracle !== nothing
         opts.delta0 <= 0 && throw(ArgumentError("inexact solve requires opts.delta0 > 0"))
         # Condition 2 requires 0 < eta < min(eta1, 1 - eta2).
