@@ -65,15 +65,22 @@ mutable struct CachedJacobianMap{T,MA<:AbstractMatrix{T},FV,FAS,FH} <: VectorMap
 end
 function CachedJacobianMap{T}(; m::Integer, Ak::AbstractMatrix{T},
                               value, assemble, ahp=nothing) where {T}
+    size(Ak, 1) == Int(m) || throw(ArgumentError(
+        "CachedJacobianMap: size(Ak,1)=$(size(Ak, 1)) must equal m=$(Int(m)) (= rangedim)"))
     CachedJacobianMap{T,typeof(Ak),typeof(value),typeof(assemble),typeof(ahp)}(
         Int(m), Ak, value, assemble, ahp)
 end
 
 rangedim(F::CachedJacobianMap) = F.m
-# assemble! may mutate Ak in place (return nothing) or return a new same-type matrix.
+# assemble! may mutate Ak in place (return nothing) or return a new matrix of the
+# same shape; a wrong shape becomes a clear error here, not a later DimensionMismatch.
 function prepare!(F::CachedJacobianMap, x)
     newAk = F.fassemble(F.Ak, x)
-    newAk === nothing || (F.Ak = newAk)
+    if newAk !== nothing
+        size(newAk) == size(F.Ak) || throw(ArgumentError(
+            "CachedJacobianMap assemble! returned size $(size(newAk)), expected $(size(F.Ak))"))
+        F.Ak = newAk
+    end
     return F
 end
 value!(b, F::CachedJacobianMap, x)              = (F.fval(b, x); b)

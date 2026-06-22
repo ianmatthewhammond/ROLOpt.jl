@@ -183,6 +183,16 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
         @test_throws ArgumentError solve(RiskProblem(f, opNo, phi, Arisk; Y=Yp), zeros(n); opts=o)
     end
 
+    @testset "(8b) CachedJacobianMap dimension validation" begin
+        val = (b, x) -> (b .= 0; b)
+        asm = (Ak, x) -> nothing
+        @test_throws ArgumentError CachedJacobianMap{Float64}(;        # rows ≠ m
+            m=2, Ak=zeros(3, 4), value=val, assemble=asm)
+        F = CachedJacobianMap{Float64}(; m=3, Ak=zeros(3, 4), value=val,
+            assemble=(Ak, x) -> zeros(2, 4))                          # returns wrong shape
+        @test_throws ArgumentError prepare!(F, zeros(4))
+    end
+
     @testset "(8) precision genericity (Float32 / BigFloat)" begin
         n = 3
         for (T, tol) in ((Float32, 1.0f-5), (BigFloat, BigFloat(1e-20)))

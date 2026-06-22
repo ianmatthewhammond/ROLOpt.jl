@@ -140,16 +140,17 @@ call `prepare!(F, x)` before applying the Jacobian — otherwise `CachedJacobian
 has no assembled `A_k` and validation is stale.
 
 **Opt-in solve-start validation (Phase 1).** `TROptions.validate_F` (default
-`false`). When `true`, `solve` runs `check_adjoint(F, x0, v, θ)` once at the start
-and throws on a mis-wired VJP. Specified to be **deterministic (no `Random` in
-`src`)**: the probe vectors are a fixed alternating/coprime pattern reusing the
-`inexact.jl` `_dir(T, k, shift)` helper — `v = _dir(T, n, 1)` (X-coords),
-`θ = _dir(T, m, 2)` (Y-coords) — and the check fails when the **relative** adjoint
-residual `|⟨A v,θ⟩ − ⟨v,Aᵀθ⟩| / (|⟨A v,θ⟩| + 1)` exceeds `validate_tol` (a
-`TROptions` field, default `1e3·sqrt(eps(T))` — loose enough to pass a correct VJP
-at any precision, tight enough to catch a transpose mismatch, which is `O(1)`
-relative). `check_adjoint` already runs `prepare!(F, x0)` first (above), so it works
-for `CachedJacobianMap`.
+`false`). When `true`, `solve` runs a deterministic adjoint-consistency **smoke
+check** at the start and throws on a mis-wired VJP. It is **deterministic (no
+`Random` in `src`)**: a few fixed probe pairs `(v, θ)` from `inexact.jl`'s
+`_dir(T, k, shift)` helper (shifts `(1,2),(2,0),(0,1)`), failing when the worst
+**relative** adjoint residual `|⟨A v,θ⟩ − ⟨v,Aᵀθ⟩| / (|⟨A v,θ⟩| + 1)` exceeds
+`validate_tol` (a `TROptions` field, default `1e3·sqrt(eps(T))` — loose enough to
+pass a correct VJP at any precision, tight enough to catch a transpose mismatch,
+which is `O(1)` relative). It runs `prepare!(F, x0)` first, so it works for
+`CachedJacobianMap`. **It is a guard, not a proof** — an error exactly orthogonal to
+every probe would slip; for a full check the user runs `check_adjoint`/
+`check_jacobian` on their own probes.
 
 ## Phase 2 — Line-search operator reuse (matrix-free ONLY; gated, secondary)
 

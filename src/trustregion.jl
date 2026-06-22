@@ -365,19 +365,24 @@ Run TR-Risk (paper Algorithm 1) from `x0`. `opts.subsolver` selects the trial st
 term in `B_k`. Passing an `InexactOracle` runs the inexact variant (Conditions 1 &
 2), keeping `prob.F` as the exact reference for the objective.
 """
-# Deterministic adjoint-consistency probe (no Random). The user's VJP must be the
+# Deterministic adjoint-consistency SMOKE CHECK (no Random). A correct VJP is the
 # bare transpose of the JVP, so ⟨A v, θ⟩ = ⟨v, Aᵀθ⟩ (a transpose-mismatched VJP is
-# O(1) off, relative). Reuses inexact.jl's `_dir` for fixed probe vectors.
+# O(1) off, relative). A few fixed `_dir` probe pairs — a guard, not a proof: an
+# error exactly orthogonal to every probe would slip, hence "smoke check".
 function _validate_F(F::VectorMap{T}, x0, tol) where {T}
     prepare!(F, x0)
     n = length(x0); m = rangedim(F)
-    v = _dir(T, n, 1); theta = _dir(T, m, 2)
-    Jv = Vector{T}(undef, m); applyJacobian!(Jv, F, v, x0)
-    Jat = Vector{T}(undef, n); applyAdjointJacobian!(Jat, F, theta, x0)
-    a = dot(Jv, theta); b = dot(v, Jat)
-    rel = abs(a - b) / (abs(a) + one(T))
-    rel > tol && throw(ArgumentError(
-        "validate_F failed: relative adjoint residual $(rel) > $(tol). " *
+    Jv = Vector{T}(undef, m); Jat = Vector{T}(undef, n)
+    worst = zero(T)
+    for (sv, st) in ((1, 2), (2, 0), (0, 1))     # three distinct deterministic probe pairs
+        v = _dir(T, n, sv); theta = _dir(T, m, st)
+        applyJacobian!(Jv, F, v, x0)
+        applyAdjointJacobian!(Jat, F, theta, x0)
+        a = dot(Jv, theta); b = dot(v, Jat)
+        worst = max(worst, abs(a - b) / (abs(a) + one(T)))
+    end
+    worst > tol && throw(ArgumentError(
+        "validate_F smoke check failed: relative adjoint residual $(worst) > $(tol). " *
         "applyAdjointJacobian! must return the bare transpose Aᵀθ, consistent with applyJacobian!."))
     return nothing
 end
