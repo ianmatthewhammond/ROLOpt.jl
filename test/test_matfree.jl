@@ -22,7 +22,7 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
         A = randn(rng, m, n); c = randn(rng, m)
         f = TikhonovObjective(1.0); phi = L1Objective(fill(5e-2, n)); Arisk = IntervalEnvelope(0.0, 1.0)
         for sub in (:cauchy, :spg, :ncg)
-            o = TROptions{Float64}(maxit=2000, subsolver=sub)
+            o = TROptions{Float64}(maxit=2000, subsolver=sub, matrix_free_reuse=:off)  # reuse :on tested in (9)
             re = solve(RiskProblem(f, AffineMap(A, c), phi, Arisk), zeros(n); opts=o)
             rb = solve(RiskProblem(f, opmap_lin(Float64, A, c), phi, Arisk), zeros(n); opts=o)
             rc = solve(RiskProblem(f, cj_lin(Float64, A, c), phi, Arisk), zeros(n); opts=o)
@@ -52,7 +52,7 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
             end; nothing))
         f = TikhonovObjective(1.0); phi = L1Objective(fill(5e-2, n)); Arisk = IntervalEnvelope(0.0, 1.0)
         for sub in (:cauchy, :spg, :ncg)
-            o = TROptions{Float64}(maxit=3000, subsolver=sub)
+            o = TROptions{Float64}(maxit=3000, subsolver=sub, matrix_free_reuse=:off)  # reuse :on tested in (9)
             re = solve(RiskProblem(f, QM, phi, Arisk), zeros(n); opts=o)
             rb = solve(RiskProblem(f, opQ, phi, Arisk), zeros(n); opts=o)
             rc = solve(RiskProblem(f, cjQ, phi, Arisk), zeros(n); opts=o)
@@ -67,7 +67,7 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
         A = randn(rng, m, n); c = randn(rng, m)
         Xw = WeightedSpace(rand(rng, n) .+ 0.5); Yw = WeightedSpace(rand(rng, m) .+ 0.5)
         f = TikhonovObjective(1.0); phi = L1Objective(fill(5e-2, n)); Arisk = IntervalEnvelope(0.0, 1.0)
-        o = TROptions{Float64}(maxit=2000, subsolver=:spg)
+        o = TROptions{Float64}(maxit=2000, subsolver=:spg, matrix_free_reuse=:off)  # reuse :on tested in (9)
         re = solve(RiskProblem(f, AffineMap(A, c), phi, Arisk; X=Xw, Y=Yw), zeros(n); opts=o)
         rb = solve(RiskProblem(f, opmap_lin(Float64, A, c), phi, Arisk; X=Xw, Y=Yw), zeros(n); opts=o)
         rc = solve(RiskProblem(f, cj_lin(Float64, A, c), phi, Arisk; X=Xw, Y=Yw), zeros(n); opts=o)
@@ -176,10 +176,10 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
         f = TikhonovObjective(0.2); phi = ZeroProx{Float64}()
         probs = (p = rand(MersenneTwister(5), N) .+ 0.2; p ./ sum(p)); Yp = WeightedSpace(probs)
         Arisk = ConvexCombinationEnvelope(0.75, 0.9, probs)
-        o = TROptions{Float64}(maxit=300, subsolver=:spg, use_curvature=true)
+        o = TROptions{Float64}(maxit=300, subsolver=:spg, use_curvature=true, matrix_free_reuse=:off)
         re = solve(RiskProblem(f, QM, phi, Arisk; Y=Yp), zeros(n); opts=o)
         rb = solve(RiskProblem(f, opH, phi, Arisk; Y=Yp), zeros(n); opts=o)
-        @test norm(rb.x - re.x) < 1e-10
+        @test norm(rb.x - re.x) < 1e-10              # ahp wraps QM's F'' → identical (reuse off)
         @test_throws ArgumentError solve(RiskProblem(f, opNo, phi, Arisk; Y=Yp), zeros(n); opts=o)
     end
 
@@ -204,6 +204,57 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
             re = solve(prob_e, zeros(T, n); opts=opts)
             rb = solve(prob_b, zeros(T, n); opts=opts)
             @test rb.x == re.x                       # identical arithmetic at any precision
+        end
+    end
+
+    @testset "(9) matrix-free line-search reuse: matches naive, far fewer applies" begin
+        # reuse :on must agree with :off (the AXPY of the linear adjoint/forward
+        # line-search pieces equals the recompute up to rounding) while doing far fewer
+        # operator applies — each a PDE solve in a real matrix-free F. :spg exercises
+        # the dual-SPG adjoint reuse; :ncg also the dbls! forward-JVP reuse. Counters
+        # live in the OperatorMap closures.
+        jc = Ref(0); vc = Ref(0)
+
+        @testset "well-conditioned: converges both modes, tight agreement, >2× fewer VJPs" begin
+            rng = MersenneTwister(7); n = 5; m = 4
+            A = randn(rng, m, n); c = randn(rng, m)
+            opF = OperatorMap{Float64}(; m=m, value=(b, x) -> (mul!(b, A, x); b .+= c; b),
+                jvp=(o, v, x) -> (jc[] += 1; mul!(o, A, v)),
+                vjp=(o, th, x) -> (vc[] += 1; mul!(o, transpose(A), th)))
+            prob = RiskProblem(TikhonovObjective(1.0), opF, L1Objective(fill(2e-2, n)), IntervalEnvelope(0.0, 1.0))
+            for sub in (:spg, :ncg)
+                cnts = Dict{Symbol,NTuple{2,Int}}(); xs = Dict{Symbol,Vector{Float64}}()
+                for mode in (:off, :on)
+                    jc[] = 0; vc[] = 0
+                    r = solve(prob, zeros(n); opts=TROptions{Float64}(maxit=2000, subsolver=sub, matrix_free_reuse=mode))
+                    @test r.converged
+                    cnts[mode] = (jc[], vc[]); xs[mode] = copy(r.x)
+                end
+                @test norm(xs[:on] - xs[:off]) < 1e-9       # AXPY ≈ recompute (well-conditioned ⇒ tight)
+                @test 2 * cnts[:on][2] < cnts[:off][2]      # VJP (adjoint) applies: >2× fewer
+                sub === :ncg && @test cnts[:on][1] < cnts[:off][1]   # dbls! also cuts forward JVPs
+            end
+        end
+
+        @testset "harder instance (CVaR :ncg): dramatic adjoint-apply reduction" begin
+            srng = MersenneTwister(5); n = 3; N = 4
+            probs = (p = rand(srng, N) .+ 0.2; p ./ sum(p)); Yp = WeightedSpace(probs)
+            Q = [(M = randn(srng, n, n); (M'M) ./ n .* 0.05) for _ in 1:N]
+            a = randn(srng, N, n); c = randn(srng, N); QM = QuadraticMap(Q, a, c)
+            opQ = OperatorMap{Float64}(; m=N, value=(b, x) -> value!(b, QM, x),
+                jvp=(o, v, x) -> (jc[] += 1; applyJacobian!(o, QM, v, x)),
+                vjp=(o, th, x) -> (vc[] += 1; applyAdjointJacobian!(o, QM, th, x)))
+            prob = RiskProblem(TikhonovObjective(0.2), opQ, ZeroProx{Float64}(),
+                               ConvexCombinationEnvelope(0.75, 0.9, probs); Y=Yp)
+            cnts = Dict{Symbol,NTuple{2,Int}}(); xs = Dict{Symbol,Vector{Float64}}()
+            for mode in (:off, :on)
+                jc[] = 0; vc[] = 0
+                r = solve(prob, zeros(n); opts=TROptions{Float64}(maxit=200, subsolver=:ncg, matrix_free_reuse=mode))
+                @test r.converged
+                cnts[mode] = (jc[], vc[]); xs[mode] = copy(r.x)
+            end
+            @test norm(xs[:on] - xs[:off]) < 1e-6
+            @test 10 * cnts[:on][2] < cnts[:off][2]         # >10× fewer adjoint applies
         end
     end
 end

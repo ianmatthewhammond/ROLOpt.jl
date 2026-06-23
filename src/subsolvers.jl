@@ -280,15 +280,43 @@ function NcgParams{T}(; t0=1, lambdaMin=1e-8, lambdaMax=1e8, tol1=1e-4, tol2=1e-
                  Int(maxit), Int(ncgType), T(etaNCG), T(desPar))
 end
 
+# Line-search value reuse (matrix-free F). value(psi, y+t·s) does one forward JVP and
+# no prox: ell_k(y+t·s) = ell_k(y) + t·(A_k·s) is AFFINE in t. ReuseOn precomputes the
+# primal-Y vectors ell_k(y) and A_k·s once (2 JVPs) so each Brent trial is an AXPY +
+# suppA + phi (zero JVPs); ReuseOff recomputes value(nobj, y+t·s) per trial. `_reuse_of`
+# reads psi.reuse; a non-PsiModel nobj (e.g. a direct dbls! unit test on a bare phi) is
+# ReuseOff. suppA applies the Y metric internally, so ell pieces stay primal-Y.
+_reuse_of(psi::PsiModel) = psi.reuse
+_reuse_of(@nospecialize(nobj)) = ReuseOff()
+
+_ls_prepare!(nobj, ::ReuseOff, y, s) = nothing
+function _ls_prepare!(psi::PsiModel, ::ReuseOn, y, s)
+    ws = psi.ws
+    @. ws.xtmp = y - psi.xk
+    applyJacobian!(ws.ly, psi.F, ws.xtmp, psi.xk); ws.ly .+= psi.bk    # ell_k(y)
+    applyJacobian!(ws.ay, psi.F, s, psi.xk)                           # A_k·s
+    return nothing
+end
+
+_ls_value(nobj, ::ReuseOff, y, s, t, pwa) = (@. pwa = y + t * s; value(nobj, pwa))
+function _ls_value(psi::PsiModel, ::ReuseOn, y, s, t, pwa)
+    ws = psi.ws
+    @. ws.ltr = ws.ly + t * ws.ay         # ell_k(y + t·s)
+    @. pwa = y + t * s                    # point for phi
+    return suppA(psi.A, psi.Y, ws.ltr) + value(psi.phi, pwa)
+end
+
 """
-    dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0, cnt) -> (alpha, nval)
+    dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0, cnt; reuse=ReuseOff()) -> (alpha, nval)
 
 1-D minimizer of the TR model along `s`: `t -> ½t²·kappa + t·gs + nobj(y + t·s)`,
 over `t in [0, tmax]`, by Brent's method (quadratic interpolation + golden section).
 `nobj` is `psi_k` (the full nonsmooth term); only `value(nobj, ·)` is evaluated.
-`nval0` is the nonsmooth value at `y`. Port of ROL `TrustRegionAlgorithm::dbls`.
+`nval0` is the nonsmooth value at `y`. With `reuse=ReuseOn()` the affine `A_k·(y+t·s)`
+pieces are precomputed once instead of a forward JVP per trial (matrix-free F). Port
+of ROL `TrustRegionAlgorithm::dbls`.
 """
-function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T}
+function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt; reuse=ReuseOff()) where {T}
     tol0 = T(1e4) * sqrt(eps(T))
     epsb = T(1e-2) * sqrt(eps(T))
     eps0 = T(1e2) * eps(T)
@@ -300,15 +328,16 @@ function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T
     # no feasible positive step. Return early — otherwise t0 = tR = 0 below makes the
     # quadratic-upper-bound minimizer ((nold-n0)/kappa)/t0 a 0/0 NaN.
     tmax <= zero(T) && return zero(T), nold
+    _ls_prepare!(nobj, reuse, y, s)          # ReuseOn: precompute ell_k(y), A_k·s (2 JVPs)
     tL = zero(T); pL = zero(T)
     tR = tmax
-    @. pwa = y + tR * s; nR = value(nobj, pwa); cnt.npsi += 1
+    nR = _ls_value(nobj, reuse, y, s, tR, pwa); cnt.npsi += 1
     pR = tR * (half * tR * kappa + gs) + nR - nold
     # minimizer of the quadratic upper bound
     t0 = tR; n0 = nR
     if tmax > lambda
         t0 = lambda
-        @. pwa = y + t0 * s; n0 = value(nobj, pwa); cnt.npsi += 1
+        n0 = _ls_value(nobj, reuse, y, s, t0, pwa); cnt.npsi += 1
     end
     ts = kappa > zero(T) ? min(tR, ((nold - n0) / kappa) / t0 - gs / kappa) : tR
     t = min(t0, ts)
@@ -317,7 +346,7 @@ function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T
         t = t0 < tR ? t0 : half * tR
         useOptT = false
     end
-    @. pwa = y + t * s; nt = value(nobj, pwa); cnt.npsi += 1
+    nt = _ls_value(nobj, reuse, y, s, t, pwa); cnt.npsi += 1
     Qt = t * gs + nt - nold
     pt = half * t * t * kappa + Qt
     # phi constant along s => quadratic model: use the analytic minimizer
@@ -357,7 +386,7 @@ function dbls!(y, s, lambda, tmax, kappa, gs, nobj, pwa, nval0::T, cnt) where {T
             d = lam * e
         end
         u = t + (abs(d) >= tol1 ? d : (d >= zero(T) ? tol1 : -tol1))
-        @. pwa = y + u * s; nu = value(nobj, pwa); cnt.npsi += 1
+        nu = _ls_value(nobj, reuse, y, s, u, pwa); cnt.npsi += 1
         Qu = u * gs + nu - nold
         pu = half * u * u * kappa + Qu
         if pu <= pt
@@ -460,7 +489,7 @@ function dncg!(y, model, nobj, X::HilbertSpace{T}, x, gfk, del,
         # alphaMax == 0 means snorm0 >= del (already at the boundary) and s points
         # outward: no feasible step, so we are done (on the TR boundary).
         alphaMax <= zero(T) && break
-        alpha, nold = dbls!(y, s, lam1, alphaMax, sHs, gs, nobj, pwa5, nold, cnt)
+        alpha, nold = dbls!(y, s, lam1, alphaMax, sHs, gs, nobj, pwa5, nold, cnt; reuse=_reuse_of(nobj))
 
         @. y += alpha * s
         @. gmodc += alpha * dwa

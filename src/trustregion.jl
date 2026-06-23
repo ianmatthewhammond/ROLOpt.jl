@@ -91,6 +91,7 @@ struct TROptions{T}
     use_curvature::Bool  # include the (theta_k, F'') curvature term in B_k
     validate_F::Bool   # run a deterministic adjoint-consistency check on F at solve start
     validate_tol::T    # relative tolerance for that check
+    matrix_free_reuse::Symbol  # :auto | :on | :off — line-search operator reuse (matrix-free F)
     dualspg::DualSPGOptions{T}
     spg::SpgParams{T}
     ncg::NcgParams{T}
@@ -103,16 +104,19 @@ function TROptions{T}(; delta0=10, deltamax=1e12, eta1=1e-4, eta2=0.5,
                       trsafe=1e2, step_prox_tol=1e-6, htol=1e-8, maxit=1000, verbose=0,
                       subsolver::Symbol=:cauchy, use_curvature::Bool=false,
                       validate_F::Bool=false, validate_tol=1000 * sqrt(eps(T)),
+                      matrix_free_reuse::Symbol=:auto,
                       dualspg::DualSPGOptions{T}=DualSPGOptions{T}(),
                       spg::SpgParams{T}=SpgParams{T}(),
                       ncg::NcgParams{T}=NcgParams{T}()) where {T}
     subsolver in (:cauchy, :spg, :ncg) ||
         throw(ArgumentError("subsolver must be :cauchy, :spg, or :ncg"))
+    matrix_free_reuse in (:auto, :on, :off) ||
+        throw(ArgumentError("matrix_free_reuse must be :auto, :on, or :off"))
     cp = CauchyParams{T}(T(mu0), T(interpf), T(extrapf), Int(redlim), Int(explim), T(qtol))
     TROptions{T}(T(delta0), T(deltamax), T(eta1), T(eta2), T(gamma1), T(gamma3),
                  T(t0), T(alpha0), cp, T(trsafe), T(step_prox_tol), T(htol),
                  Int(maxit), Int(verbose), subsolver, use_curvature,
-                 validate_F, T(validate_tol), dualspg, spg, ncg)
+                 validate_F, T(validate_tol), matrix_free_reuse, dualspg, spg, ncg)
 end
 
 """
@@ -387,10 +391,19 @@ function _validate_F(F::VectorMap{T}, x0, tol) where {T}
     return nothing
 end
 
+# Resolve the line-search reuse mode once: :on/:off force it; :auto follows the map's
+# operator-actions-expensive trait (true only for matrix-free OperatorMap, and for an
+# InexactMap wrapping one). Returns a Bool; the caller branches into a function
+# barrier so PsiModel's reuse mode is a concrete (compile-time) singleton.
+function _reuse_on(mode::Symbol, F)
+    mode === :on && return true
+    mode === :off && return false
+    return operator_actions_expensive(typeof(F))     # :auto
+end
+
 function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
                opts::TROptions{T}=TROptions{T}(),
                oracle::Union{Nothing,InexactOracle{T}}=nothing) where {T}
-    X = prob.X; Y = prob.Y
     n = length(x0); m = rangedim(prob.F)
     opts.validate_F && _validate_F(prob.F, x0, opts.validate_tol)
     if oracle !== nothing
@@ -399,13 +412,22 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         !(zero(T) < oracle.eta < min(opts.eta1, one(T) - opts.eta2)) &&
             throw(ArgumentError("InexactOracle eta must satisfy 0 < eta < min(eta1, 1-eta2)"))
     end
+    # Resolve against prob.F; under inexactness the InexactMap wrapping prob.F forwards
+    # the same trait, so the gate is identical. Then dispatch into a concrete kernel.
+    return _reuse_on(opts.matrix_free_reuse, prob.F) ?
+           _solve_resolved(prob, x0, opts, oracle, ReuseOn()) :
+           _solve_resolved(prob, x0, opts, oracle, ReuseOff())
+end
+
+# Function barrier: with `ru` concrete, PsiModel's reuse mode is a compile-time type
+# parameter, so the kernels specialize and the ReuseOff branch is elided.
+function _solve_resolved(prob::RiskProblem{T}, x0, opts, oracle, ru) where {T}
+    X = prob.X; Y = prob.Y
+    n = length(x0); m = rangedim(prob.F)
     bw = _SolveBuffers(T, x0, m)
     cnt = Counters()
-    # Function barrier: construct the branch-specific psi/model/imap concretely, then
-    # dispatch once to a typed kernel so the outer loop never dynamically dispatches
-    # on a union-typed psi/model/oracle/imap.
     if oracle === nothing
-        psi = PsiModel(prob.phi, prob.A, prob.F, X, Y, n; opts=opts.dualspg)
+        psi = PsiModel(prob.phi, prob.A, prob.F, X, Y, n; opts=opts.dualspg, reuse=ru)
         model = opts.use_curvature ? QuadraticModel(prob.f, prob.F, X, Y, n, m) :
                                      QuadraticModel(prob.f, X, n)
         return _solve_exact!(prob, opts, psi, model, bw, cnt)
@@ -414,7 +436,7 @@ function solve(prob::RiskProblem{T}, x0::AbstractVector{T};
         # replaced, so objective_value! keeps the exact reference. Curvature's F''
         # delegates to the exact F (Condition 1 bounds g_k/b_k/A_k, not the Hessian).
         imap = InexactMap(prob.F, n)
-        psi = PsiModel(prob.phi, prob.A, imap, X, Y, n; opts=opts.dualspg)
+        psi = PsiModel(prob.phi, prob.A, imap, X, Y, n; opts=opts.dualspg, reuse=ru)
         model = opts.use_curvature ? QuadraticModel(prob.f, imap, X, Y, n, m) :
                                      QuadraticModel(prob.f, X, n)
         return _solve_inexact!(prob, opts, psi, model, oracle, imap, bw, cnt)

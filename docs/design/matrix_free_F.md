@@ -250,13 +250,18 @@ paths stay byte-for-byte.
 
 ## Phasing
 
-- **Phase 1:** `prepare!` (interface + `reanchor!` + `InexactMap` + `check.jl`),
-  `OperatorMap`, `CachedJacobianMap`, the `operator_actions_expensive` trait,
-  `TROptions.validate_F` opt-in solve-start check, cache contract, docs, tests 1–8.
-  **No `prox!`/`dncg!` reuse**; API ships and stabilizes.
-- **Phase 2:** gated matrix-free reuse in dual-SPG + NCG — `matrix_free_reuse`,
-  resolved reuse-mode param on `PsiModel`, `_dual_d!` split, `dbls!`/`dncg!`
-  evaluator, test 9. Explicit/cached zero-alloc/inference guards still pass.
+- **Phase 1 (DONE):** `prepare!` (interface + `reanchor!` + `InexactMap` +
+  `check.jl`), `OperatorMap`, `CachedJacobianMap`, the `operator_actions_expensive`
+  trait, `TROptions.validate_F` opt-in solve-start check, cache contract, docs,
+  tests 1–8. No `prox!`/`dncg!` reuse.
+- **Phase 2 (DONE):** gated matrix-free reuse in dual-SPG + NCG — `matrix_free_reuse`
+  (`:auto`/`:on`/`:off`), the reuse-mode singleton resolved once into a `PsiModel`
+  type parameter (`ReuseOn`/`ReuseOff`), `_dual_d!` split into `_compute_adj!` +
+  `_dual_d_from_adj!`, `_trial_adj!` AXPY, the `dbls!`/`dncg!` affine `_ls_value`
+  evaluator, test 9. The explicit/cached path is `ReuseOff` (compile-time elided), so
+  `test_perf` zero-alloc/`@inferred` and all trajectory tests stay byte-for-byte;
+  reuse cuts adjoint applies ~10–100× on iterating instances and matches the naive
+  result to rounding.
 - **Phase 3:** real Gridap tangent/adjoint `F` in
   `external/photonics-opt-testbed/Focusing2D`, end-to-end.
 
