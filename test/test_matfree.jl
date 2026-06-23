@@ -257,4 +257,30 @@ cj_lin(::Type{T}, A, c) where {T} = CachedJacobianMap{T}(; m=size(A, 1), Ak=zero
             @test 10 * cnts[:on][2] < cnts[:off][2]         # >10× fewer adjoint applies
         end
     end
+
+    @testset "(10) inexact + matrix-free: reuse stays enabled through InexactMap" begin
+        # The advanced composition: an InexactMap wrapping an OperatorMap. The trait
+        # forwards through the wrapper, so :auto keeps reuse on under inexactness; the
+        # InexactMap's perturbed A_k is frozen between refreshes, so the reuse is valid.
+        srng = MersenneTwister(202); n = 5
+        f = TikhonovObjective(0.5); A = randn(srng, 1, n); c = [0.3]
+        phi = L1Objective(fill(1e-2, n)); Arisk = IntervalEnvelope(0.0, 1.0)
+        vc = Ref(0)
+        opF = OperatorMap{Float64}(; m=1, value=(b, x) -> (mul!(b, A, x); b .+= c; b),
+            jvp=(o, v, x) -> mul!(o, A, v),
+            vjp=(o, th, x) -> (vc[] += 1; mul!(o, transpose(A), th)))
+        @test operator_actions_expensive(typeof(InexactMap(opF, n)))   # trait forwards through the wrapper
+        mkoracle() = InexactOracle(f; kgrad=1.0, kval=1.0, kjac=1.0, kobj=1e2, rho=0.5)
+        opts(mode) = TROptions{Float64}(maxit=2000, subsolver=:spg, delta0=10.0, matrix_free_reuse=mode)
+        re = solve(RiskProblem(f, AffineMap(A, c), phi, Arisk), zeros(n); opts=opts(:off), oracle=mkoracle())
+        @test re.converged
+        counts = Dict{Symbol,Int}()
+        for mode in (:off, :on)
+            vc[] = 0
+            r = solve(RiskProblem(f, opF, phi, Arisk), zeros(n); opts=opts(mode), oracle=mkoracle())
+            @test r.converged && norm(r.x - re.x) < 1e-6   # inexact + matrix-free reaches the exact minimizer
+            counts[mode] = vc[]
+        end
+        @test counts[:on] < counts[:off]                    # reuse cut adjoint applies under inexactness
+    end
 end

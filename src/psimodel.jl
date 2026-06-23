@@ -133,8 +133,10 @@ end
 (PDE factorization / cached-Jacobian assembly), then `b_k = F(x_k)`."""
 function reanchor!(psi::PsiModel, xk)
     copyto!(psi.xk, xk)
+    # Both the prepare! hook and b_k use the SAME frozen anchor psi.xk — the cache the
+    # map builds in prepare! is exactly what every subsequent apply at psi.xk reuses.
     prepare!(psi.F, psi.xk)      # build the frozen linearization at x_k (no-op for plain maps)
-    value!(psi.bk, psi.F, xk)
+    value!(psi.bk, psi.F, psi.xk)
     return psi
 end
 
