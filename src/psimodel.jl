@@ -137,6 +137,10 @@ function reanchor!(psi::PsiModel, xk)
     # map builds in prepare! is exactly what every subsequent apply at psi.xk reuses.
     prepare!(psi.F, psi.xk)      # build the frozen linearization at x_k (no-op for plain maps)
     value!(psi.bk, psi.F, psi.xk)
+    # Moving-sample maps re-index their output set each anchor, so a dual theta warm-
+    # started from the previous anchor refers to stale slots; reset it to the feasible
+    # default. Fixed-index maps (the default) keep the warm start (branch elided).
+    moving_sample(psi.F) && initdual!(psi.theta, psi.A)
     return psi
 end
 

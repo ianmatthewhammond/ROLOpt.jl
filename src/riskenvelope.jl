@@ -196,3 +196,100 @@ function bound(A::ConvexCombinationEnvelope{T}, Y::HilbertSpace) where {T}
 end
 # theta ≡ 1 is feasible: Σ pᵢ·1 = 1 and l ≤ 1 ≤ u.
 initdual!(theta, A::ConvexCombinationEnvelope) = (fill!(theta, one(eltype(theta))); theta)
+
+# ---------------------------------------------------------------------------
+# Probability-simplex envelope A = { theta : Σ thetaᵢ = 1, thetaᵢ ≥ 0 }
+# ---------------------------------------------------------------------------
+"""
+    SimplexEnvelope{T}(n)
+
+`A = { θ ∈ ℝⁿ : Σᵢ θᵢ = 1, θᵢ ≥ 0 }`, the probability simplex. Its support
+function is the **maximum**: in the Y metric `diag(w)` (w = 1 for Euclidean),
+
+    suppA(y) = sup_{θ∈A} (θ, y)_Y = max_i (wᵢ · yᵢ).
+
+**With `Y = EuclideanSpace` (wᵢ ≡ 1) this is exactly `maximum(y)`** — the risk
+measure ROLOpt needs to minimize a true (sampled) max, e.g. `max_i σ_vm(q_i)`.
+Note the weighting: under a *weighted* Y, `suppA` is `max_i(wᵢ yᵢ)`, NOT
+`max_i yᵢ`; for a sampled hard-max use Euclidean Y unless a weighting is intended.
+
+`projA` is the Y-metric projection onto the simplex via the KKT shift
+`θᵢ = max(yᵢ + ν/wᵢ, 0)` with `ν` the root of the budget `Σ θᵢ = 1` (Euclidean ⇒
+the classic Duchi et al. projection). `MA = sqrt(max_i wᵢ)` (the simplex's extreme
+points are the unit vertices `e_j`, so the Y-farthest is `‖e_j‖_Y = sqrt(w_j)`;
+Euclidean ⇒ 1). This is the limiting CVaR set (`Σ θ = 1`, no upper bound), which
+`ConvexCombinationEnvelope` cannot represent (it forbids `p ≥ 1`).
+"""
+struct SimplexEnvelope{T} <: RiskEnvelope{T}
+    n::Int
+    function SimplexEnvelope{T}(n::Integer) where {T}
+        n >= 1 || throw(ArgumentError("SimplexEnvelope requires n >= 1"))
+        new{T}(Int(n))
+    end
+end
+
+function suppA(A::SimplexEnvelope{T}, Y::HilbertSpace, y) where {T}
+    w = proxweights(Y)
+    m = T(-Inf)
+    @inbounds for i in eachindex(y)
+        v = _wi(w, i) * y[i]
+        v > m && (m = v)
+    end
+    return m
+end
+
+# g(nu) = Σ max(yᵢ + nu/wᵢ, 0) - 1, the projection budget residual (continuous,
+# nondecreasing in nu). Module-level + dispatched on the weights so project! stays a
+# closure-free, allocation-free bisection (it runs in the dual-SPG inner loop).
+@inline function _simplex_budget(::Nothing, y, nu::T) where {T}
+    s = zero(T)
+    @inbounds @simd for i in eachindex(y)
+        s += max(y[i] + nu, zero(T))
+    end
+    return s - one(T)
+end
+@inline function _simplex_budget(w::AbstractVector, y, nu::T) where {T}
+    s = zero(T)
+    @inbounds @simd for i in eachindex(y)
+        s += max(y[i] + nu / w[i], zero(T))
+    end
+    return s - one(T)
+end
+
+function project!(out, A::SimplexEnvelope{T}, Y::HilbertSpace, y) where {T}
+    w = proxweights(Y)
+    # Bracket the root of g(nu) (continuous, nondecreasing; a root exists since the
+    # simplex is nonempty), then bisect — mirrors ConvexCombinationEnvelope's project!.
+    nlo = zero(T); nhi = zero(T)
+    if _simplex_budget(w, y, nlo) > zero(T)
+        nhi = nlo; nlo = -one(T)
+        while _simplex_budget(w, y, nlo) > zero(T); nlo *= 2; end
+    else
+        nhi = one(T)
+        while _simplex_budget(w, y, nhi) < zero(T); nhi *= 2; end
+    end
+    for _ in 1:200
+        nu = (nlo + nhi) / 2
+        if _simplex_budget(w, y, nu) > zero(T); nhi = nu; else; nlo = nu; end
+        nhi - nlo <= eps(T) * max(one(T), abs(nhi)) && break
+    end
+    nu = (nlo + nhi) / 2
+    if w === nothing
+        @inbounds @simd for i in eachindex(y)
+            out[i] = max(y[i] + nu, zero(T))
+        end
+    else
+        @inbounds @simd for i in eachindex(y)
+            out[i] = max(y[i] + nu / w[i], zero(T))
+        end
+    end
+    return out
+end
+
+function bound(A::SimplexEnvelope{T}, Y::HilbertSpace) where {T}
+    w = proxweights(Y)
+    wmax = w === nothing ? one(T) : maximum(w)
+    return sqrt(wmax)
+end
+# theta = 1/n is feasible: Σ (1/n) = 1 and 1/n ≥ 0.
+initdual!(theta, A::SimplexEnvelope) = (fill!(theta, inv(eltype(theta)(A.n))); theta)

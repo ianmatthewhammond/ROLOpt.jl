@@ -103,6 +103,14 @@ prepare!(F::VectorMap, x) = F
 operator_actions_expensive(::Type{<:VectorMap}) = false
 operator_actions_expensive(F::VectorMap) = operator_actions_expensive(typeof(F))
 
+# Representation trait: does this map's output index set / sample geometry change
+# across anchors (e.g. a moving-mesh / moving-cut sampled map, where output slot i
+# refers to a different physical point after a re-anchor)? Default false. When true,
+# `reanchor!` resets the dual `theta` (initdual!) so a stale warm start across a
+# changed sample set cannot poison the prox. Fixed-index maps keep the warm start.
+# Instance-level (not type-level): an OperatorMap may or may not be moving-sample.
+moving_sample(::VectorMap) = false
+
 """rangedim(F): dimension of the output space Y."""
 rangedim(F::VectorMap) = throw(MethodError(rangedim, (F,)))
 

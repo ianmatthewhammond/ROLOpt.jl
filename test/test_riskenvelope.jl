@@ -126,4 +126,48 @@ end
             @test !isapprox(thp, the; atol=1e-3)
         end
     end
+
+    @testset "SimplexEnvelope (probability simplex / hard max)" begin
+        @testset "constructor validation" begin
+            @test_throws ArgumentError SimplexEnvelope{Float64}(0)   # n < 1
+        end
+
+        @testset "support function is the max (Euclidean) / weighted max" begin
+            n = 7
+            A = SimplexEnvelope{Float64}(n)
+            w = rand(rng, n) .+ 0.3
+            Yw = WeightedSpace(w)
+            for _ in 1:50
+                y = randn(rng, n)
+                @test suppA(A, Xeuc, y) ≈ maximum(y)                       # exact max
+                @test suppA(A, Yw, y) ≈ maximum(w[i] * y[i] for i in 1:n)  # weighted max
+            end
+            @test bound(A, Xeuc) == 1.0
+            @test bound(A, Yw) ≈ sqrt(maximum(w))                         # vertex norm
+            theta = fill(99.0, n); initdual!(theta, A)
+            @test all(theta .≈ 1 / n) && sum(theta) ≈ 1                   # uniform, feasible
+        end
+
+        @testset "projection feasibility + idempotence + VI (Euclidean & weighted)" begin
+            n = 9
+            A = SimplexEnvelope{Float64}(n)
+            w = rand(rng, n) .+ 0.2
+            for Y in (Xeuc, WeightedSpace(w))
+                for _ in 1:40
+                    y = 2 .* randn(rng, n) .+ 0.5
+                    th = projectdual(A, Y, y)
+                    @test sum(th) ≈ 1 atol=1e-9        # Σ θᵢ = 1 (NOT Σ pᵢ θᵢ)
+                    @test all(th .>= -1e-12)           # θ ≥ 0
+                    @test projectdual(A, Y, th) ≈ th atol=1e-9   # idempotent
+                end
+                # variational inequality (y - θ̄, θ' - θ̄)_Y ≤ 0 for feasible θ'
+                y = 3 .* randn(rng, n)
+                th = projectdual(A, Y, y)
+                for _ in 1:100
+                    thp = projectdual(A, Y, randn(rng, n))
+                    @test inner(Y, y .- th, thp .- th) <= 1e-8
+                end
+            end
+        end
+    end
 end

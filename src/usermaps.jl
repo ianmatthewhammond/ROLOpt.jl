@@ -21,6 +21,8 @@
 #   vjp(out, th, x)    -> out = F'(x)ᵀ th        (coord X, bare transpose)
 #   ahp(out, th, v, x) -> out = (th, F''(x) v)   (optional; coord X)
 #   prepare(x)         -> (optional) factorize/cache the frozen linearization at x
+# `moving_sample=true` marks an F whose output sample set re-indexes across anchors
+# (e.g. a moving-cut sampled-stress map); then reanchor! resets the dual theta.
 struct OperatorMap{T,FV,FJ,FA,FH,FP} <: VectorMap{T}
     m::Int
     fval::FV
@@ -28,15 +30,18 @@ struct OperatorMap{T,FV,FJ,FA,FH,FP} <: VectorMap{T}
     fvjp::FA
     fahp::FH      # Nothing if no curvature callback
     fprep::FP     # Nothing if no prepare callback
+    moving_sample::Bool
 end
 # Keyword names are bang-free (`vjp!=f` would lex as `vjp != f`); the callbacks
 # themselves can still be `!`-named functions.
-function OperatorMap{T}(; m::Integer, value, jvp, vjp, ahp=nothing, prepare=nothing) where {T}
+function OperatorMap{T}(; m::Integer, value, jvp, vjp, ahp=nothing, prepare=nothing,
+                        moving_sample::Bool=false) where {T}
     OperatorMap{T,typeof(value),typeof(jvp),typeof(vjp),typeof(ahp),typeof(prepare)}(
-        Int(m), value, jvp, vjp, ahp, prepare)
+        Int(m), value, jvp, vjp, ahp, prepare, moving_sample)
 end
 
 rangedim(F::OperatorMap) = F.m
+moving_sample(F::OperatorMap) = F.moving_sample
 value!(b, F::OperatorMap, x)                = (F.fval(b, x); b)
 applyJacobian!(out, F::OperatorMap, v, x)   = (F.fjvp(out, v, x); out)
 applyAdjointJacobian!(out, F::OperatorMap, theta, x) = (F.fvjp(out, theta, x); out)

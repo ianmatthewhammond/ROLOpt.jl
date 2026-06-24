@@ -37,10 +37,10 @@ export value, value!, gradient, gradient!, hessVec, hessVec!
 export applyJacobian!, applyAdjointJacobian!, applyAdjointHessian!, prox, prox!, proxX!
 
 # User-selected F representations (matrix-free / cached Jacobian)
-export OperatorMap, CachedJacobianMap, prepare!, operator_actions_expensive
+export OperatorMap, CachedJacobianMap, prepare!, operator_actions_expensive, moving_sample
 
 # Risk envelope
-export RiskEnvelope, IntervalEnvelope, ConvexCombinationEnvelope
+export RiskEnvelope, IntervalEnvelope, ConvexCombinationEnvelope, SimplexEnvelope
 export suppA, project!, projectdual, bound, initdual!
 
 # Derivative checks

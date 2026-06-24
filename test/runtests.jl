@@ -6,6 +6,7 @@ using Random
 @testset "ROLOpt.jl" begin
     include("test_check.jl")
     include("test_riskenvelope.jl")
+    include("test_simplex_max.jl")
     include("test_psimodel_prox.jl")
     include("test_cauchy_decrease.jl")
     include("test_lasso_reduce.jl")
