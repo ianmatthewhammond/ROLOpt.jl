@@ -229,6 +229,11 @@ struct SimplexEnvelope{T} <: RiskEnvelope{T}
 end
 
 function suppA(A::SimplexEnvelope{T}, Y::HilbertSpace, y) where {T}
+    # The Σθ=1 budget couples all n entries, so length MUST match A.n — a mismatch
+    # (e.g. an M_active envelope against an M_max-padded dual) would silently make the
+    # initial dual infeasible. Guard it (cheap O(1) vs the O(n) loop).
+    length(y) == A.n || throw(DimensionMismatch(
+        "SimplexEnvelope(n=$(A.n)): suppA got y of length $(length(y))"))
     w = proxweights(Y)
     m = T(-Inf)
     @inbounds for i in eachindex(y)
@@ -257,6 +262,8 @@ end
 end
 
 function project!(out, A::SimplexEnvelope{T}, Y::HilbertSpace, y) where {T}
+    (length(y) == A.n && length(out) == A.n) || throw(DimensionMismatch(
+        "SimplexEnvelope(n=$(A.n)): project! got y/out of length $(length(y))/$(length(out))"))
     w = proxweights(Y)
     # Bracket the root of g(nu) (continuous, nondecreasing; a root exists since the
     # simplex is nonempty), then bisect — mirrors ConvexCombinationEnvelope's project!.
@@ -292,4 +299,9 @@ function bound(A::SimplexEnvelope{T}, Y::HilbertSpace) where {T}
     return sqrt(wmax)
 end
 # theta = 1/n is feasible: Σ (1/n) = 1 and 1/n ≥ 0.
-initdual!(theta, A::SimplexEnvelope) = (fill!(theta, inv(eltype(theta)(A.n))); theta)
+function initdual!(theta, A::SimplexEnvelope)
+    length(theta) == A.n || throw(DimensionMismatch(
+        "SimplexEnvelope(n=$(A.n)): initdual! got theta of length $(length(theta))"))
+    fill!(theta, inv(eltype(theta)(A.n)))
+    return theta
+end

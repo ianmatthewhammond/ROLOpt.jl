@@ -148,6 +148,18 @@ end
             @test all(theta .≈ 1 / n) && sum(theta) ≈ 1                   # uniform, feasible
         end
 
+        @testset "dimension guards (length must match A.n)" begin
+            # The Σθ=1 budget couples all entries; a length mismatch would silently
+            # build an infeasible dual (e.g. M_active envelope vs M_max-padded theta).
+            A = SimplexEnvelope{Float64}(5)
+            @test_throws DimensionMismatch suppA(A, Xeuc, zeros(3))
+            @test_throws DimensionMismatch projectdual(A, Xeuc, zeros(3))     # y wrong
+            @test_throws DimensionMismatch project!(zeros(3), A, Xeuc, zeros(5))  # out wrong
+            @test_throws DimensionMismatch initdual!(zeros(3), A)
+            # matching lengths are fine
+            @test sum(initdual!(zeros(5), A)) ≈ 1
+        end
+
         @testset "projection feasibility + idempotence + VI (Euclidean & weighted)" begin
             n = 9
             A = SimplexEnvelope{Float64}(n)
