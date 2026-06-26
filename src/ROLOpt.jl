@@ -41,7 +41,7 @@ export OperatorMap, CachedJacobianMap, prepare!, operator_actions_expensive, mov
 
 # Risk envelope
 export RiskEnvelope, IntervalEnvelope, ConvexCombinationEnvelope, SimplexEnvelope
-export suppA, project!, projectdual, bound, initdual!
+export suppA, project!, projectdual, bound, initdual!, warmdual!
 
 # Derivative checks
 export check_gradient, check_hessvec, check_jacobian, check_adjoint, check_hess_sym

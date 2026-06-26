@@ -46,11 +46,13 @@ end
     @test moving_sample(Fmoving) == true
     @test moving_sample(Ffixed) == false
 
-    # reanchor! resets theta to initdual! (uniform) ONLY for the moving-sample map.
+    # reanchor! re-seeds theta via warmdual! (argmax vertex for the simplex) ONLY for
+    # the moving-sample map. F is the identity, so b_k = x_anchor ⇒ θ = e_argmax(x_anchor).
     psim = PsiModel(phi, A, Fmoving, X, Y, n)
     fill!(psim.theta, 7.0)
-    reanchor!(psim, randn(n))
-    @test psim.theta ≈ fill(1 / n, n)          # reset
+    xa = randn(n)
+    reanchor!(psim, xa)
+    @test psim.theta ≈ [i == argmax(xa) ? 1.0 : 0.0 for i in 1:n]   # warm dual = max vertex
 
     psif = PsiModel(phi, A, Ffixed, X, Y, n)
     fill!(psif.theta, 7.0)

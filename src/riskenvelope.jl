@@ -14,6 +14,12 @@ project!(out, A::RiskEnvelope, Y, y) = throw(MethodError(project!, (out, A, Y, y
 bound(A::RiskEnvelope, Y) = throw(MethodError(bound, (A, Y)))
 initdual!(theta, A::RiskEnvelope) = throw(MethodError(initdual!, (theta, A)))
 
+# Optional WARM dual: given the current values `y` (= the anchor `b_k`), pick a
+# feasible dual closer to the optimum than the value-agnostic `initdual!`. Default:
+# ignore `y` and fall back to `initdual!`. Envelopes whose dual optimum is easy to
+# guess from `y` (e.g. the simplex, whose optimum is the argmax vertex) override this.
+warmdual!(theta, A::RiskEnvelope, y) = initdual!(theta, A)
+
 projectdual(A::RiskEnvelope, Y, y) = project!(similar(y), A, Y, y)
 
 # Per-component Y weight (1 if Euclidean).
@@ -303,5 +309,17 @@ function initdual!(theta, A::SimplexEnvelope)
     length(theta) == A.n || throw(DimensionMismatch(
         "SimplexEnvelope(n=$(A.n)): initdual! got theta of length $(length(theta))"))
     fill!(theta, inv(eltype(theta)(A.n)))
+    return theta
+end
+# Warm dual: the support function's dual optimum is the vertex e_argmax(y) (all mass
+# on the max slot). Starting there lets the dual-SPG converge in a few iterations
+# instead of crawling from uniform 1/n — the hard max's dual is sparse (a vertex), so
+# uniform is a poor start. Padding/inactive slots (y = 0) never win argmax against
+# real positive values.
+function warmdual!(theta, A::SimplexEnvelope, y)
+    (length(theta) == A.n && length(y) == A.n) || throw(DimensionMismatch(
+        "SimplexEnvelope(n=$(A.n)): warmdual! got theta/y of length $(length(theta))/$(length(y))"))
+    fill!(theta, zero(eltype(theta)))
+    @inbounds theta[argmax(y)] = one(eltype(theta))
     return theta
 end

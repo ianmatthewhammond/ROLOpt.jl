@@ -138,9 +138,10 @@ function reanchor!(psi::PsiModel, xk)
     prepare!(psi.F, psi.xk)      # build the frozen linearization at x_k (no-op for plain maps)
     value!(psi.bk, psi.F, psi.xk)
     # Moving-sample maps re-index their output set each anchor, so a dual theta warm-
-    # started from the previous anchor refers to stale slots; reset it to the feasible
-    # default. Fixed-index maps (the default) keep the warm start (branch elided).
-    moving_sample(psi.F) && initdual!(psi.theta, psi.A)
+    # started from the previous anchor refers to stale slots; re-seed it from the fresh
+    # anchor values b_k via warmdual! (for the simplex/max envelope this is the argmax
+    # vertex — a far better start than uniform). Fixed-index maps keep the warm start.
+    moving_sample(psi.F) && warmdual!(psi.theta, psi.A, psi.bk)
     return psi
 end
 

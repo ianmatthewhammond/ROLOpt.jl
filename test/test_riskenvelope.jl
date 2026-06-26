@@ -146,6 +146,9 @@ end
             @test bound(A, Yw) ≈ sqrt(maximum(w))                         # vertex norm
             theta = fill(99.0, n); initdual!(theta, A)
             @test all(theta .≈ 1 / n) && sum(theta) ≈ 1                   # uniform, feasible
+            # warm dual = argmax vertex e_j (feasible: Σ=1, ≥0), all mass on the max slot
+            y = randn(n); th = fill(99.0, n); warmdual!(th, A, y)
+            @test sum(th) ≈ 1 && all(th .>= 0) && th[argmax(y)] == 1 && count(==(1.0), th) == 1
         end
 
         @testset "dimension guards (length must match A.n)" begin
