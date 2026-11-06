@@ -165,6 +165,6 @@ The paper itself is not redistributed here; get it from arXiv.
 ## License
 
 ROLOpt.jl is released under the MIT License (see [`LICENSE`](LICENSE)).
-The portions ported from ROL remain subject to ROL's BSD-style license,
+The portions ported from ROL remain subject to ROL's BSD-3-Clause license (Copyright (c) 2014 NTESS and the ROL contributors),
 reproduced in [`LICENSE-ROL`](LICENSE-ROL). Use of the names Sandia, Trilinos
 or ROL here is for attribution only and implies no endorsement.

@@ -28,6 +28,7 @@ Parts of this package (the trust-region scaffold, subproblem solvers,
 derivative checks and vector-space conventions in src/; each source file names
 the C++ it mirrors) are a Julia port of the Rapid Optimization Library (ROL),
 part of the Trilinos Project, pinned to Trilinos commit 46b83e0. Those portions
-remain subject to ROL's BSD-style license, reproduced in full in LICENSE-ROL.
+remain subject to ROL's BSD-3-Clause license (Copyright (c) 2014 NTESS
+and the ROL contributors), reproduced in full in LICENSE-ROL.
 ROLOpt.jl is unofficial and is not endorsed by Sandia, the Trilinos Project or
 the ROL developers.

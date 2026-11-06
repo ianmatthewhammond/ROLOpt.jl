@@ -1,5 +1,5 @@
 # Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
-# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+# Copyright (c) 2014 NTESS and the ROL contributors, BSD-3-Clause (see LICENSE-ROL).
 
 # User-selected matrix-free / cached-Jacobian risk maps. The user CHOOSES the
 # representation by the VectorMap type they pass; ROLOpt never infers whether to
