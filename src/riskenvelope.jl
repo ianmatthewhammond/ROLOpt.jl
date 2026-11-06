@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Risk envelope A ⊂ Y: nonempty, closed, convex, bounded. Provides, w.r.t. the Y
 # inner product, the support function suppA(Y,y) = sup_{theta in A} (theta,y)_Y,
 # the metric projection projA(Y,y), the bound MA = sup_{theta in A} ‖theta‖_Y,

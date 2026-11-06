@@ -5,3 +5,11 @@
 *.jl.mem
 /docs/build/
 .DS_Store
+
+# Kept local only, never published:
+#   paper/    — the arXiv source of Kouri's paper (not ours to redistribute; cite it instead)
+#   testbeds/ — local application testbeds (not part of the package)
+#   external/ — third-party clones used for experiments
+/paper/
+/testbeds/
+/external/

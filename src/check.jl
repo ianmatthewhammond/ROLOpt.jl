@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Finite-difference derivative checks (ports of ROL `Objective::checkGradient`,
 # `checkHessVec`, `checkHessSym`, `Constraint::checkApplyJacobian`,
 # `checkAdjointConsistency`). Central differences are used so that for the

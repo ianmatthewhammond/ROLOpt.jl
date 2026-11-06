@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # psi_k model objective and Algorithm 2 (the paper's net-new pieces).
 #
 #   psi_k(x) = suppA( A_k (x - x_k) + b_k ) + phi(x),     A_k ~ F'(x_k), b_k ~ F(x_k)

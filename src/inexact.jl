@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Inexactness (paper Conditions 1 & 2), wired explicitly and audit-friendly.
 #
 # Condition 1 (model data accuracy at x_k):

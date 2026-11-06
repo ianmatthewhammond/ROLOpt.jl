@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # TR-Risk: the main loop (paper Algorithm 1). The trial step is the Cauchy point
 # (`subsolver=:cauchy`), optionally improved by spectral proximal-gradient steps
 # (`subsolver=:spg`) or nonlinear-CG steps (`subsolver=:ncg`). Supports inexact

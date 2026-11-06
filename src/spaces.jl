@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Hilbert space abstraction (diagonal metrics).
 #
 # Vectors are plain Julia arrays. A `HilbertSpace` supplies the metric: an inner

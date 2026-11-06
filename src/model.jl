@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Smooth quadratic trust-region model q_k of f, anchored at x_k:
 #
 #   q_k(x) = ½ (B_k (x - x_k), x - x_k)_X + (g_k, x - x_k)_X

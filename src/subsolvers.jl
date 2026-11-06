@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # Trust-region subproblem building blocks: the proximal-gradient step (`pgstep!`),
 # the stationarity metric (`hstat!`), the Cauchy point (`dcauchy!`), and the two
 # improvers — spectral proximal-gradient (`dspg!`) and nonlinear-CG (`dncg!` +

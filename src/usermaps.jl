@@ -1,3 +1,6 @@
+# Part of ROLOpt.jl (MIT; see LICENSE). Portions are ported from Trilinos ROL,
+# Copyright (2014) Sandia Corporation, under its BSD-style license (see LICENSE-ROL).
+
 # User-selected matrix-free / cached-Jacobian risk maps. The user CHOOSES the
 # representation by the VectorMap type they pass; ROLOpt never infers whether to
 # assemble A_k. Both types are plain VectorMaps — the solver and Algorithm 2 touch

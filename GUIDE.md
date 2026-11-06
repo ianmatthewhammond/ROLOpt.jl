@@ -4,7 +4,8 @@
 > was ported from Trilinos ROL versus written new, be able to set up and solve a
 > problem, and be able to defend any design decision as if you wrote it yourself.
 >
-> Paper pointers throughout refer to `paper/arXiv-2604.07216v1/main.tex` by line
+> Paper pointers throughout refer to the LaTeX source of arXiv:2604.07216v1
+> (`main.tex`, downloadable from arXiv; not redistributed here) by line
 > number, written as `main.tex:NNN`. Code pointers are `file.jl:NNN`.
 
 ---
@@ -845,7 +846,7 @@ audit + match to the exact minimizer).
 ## Part XI — Convergence theory you should be able to recite
 
 You don't need the proofs, but to defend the design you should know the *shape*
-of the guarantees (paper §5, `main.tex:786`).
+of the guarantees (paper §4, `main.tex:786`).
 
 **Two classes of result:**
 
@@ -907,7 +908,7 @@ not "reproduced Table 1."
 `F(z) = w − (1/|D_o|)∫ S(z)`, `phi = L1 + box` — is *structurally identical* to our
 `test_risk_finitedim_p1.jl` instance (`IntervalEnvelope(0,1)`, scalar
 `QuadraticMap`, `BoxL1Objective`). Ours is the finite-dimensional shadow of the
-paper's §6.2: same objective shape, same envelope, same `phi`, minus the PDE that
+paper's §5.2: same objective shape, same envelope, same `phi`, minus the PDE that
 produces `F`. And our `Counters` are Table 3's columns. The cleanest path to a
 *real* comparison would be to implement that semilinear elliptic `F` with a FEM
 discretization (Gridap-friendly), wire its adjoint into the `VectorMap` interface,
@@ -1018,7 +1019,7 @@ test meaningless. (`trustregion.jl:138`, `test_risk_finitedim_p1.jl:65`)
 - **Skim the paper** in this order: §1 intro (`main.tex:147`), Algorithm 1
   (`:591`), Algorithm 2 (`:687`), then the numerics tables (`:1522`, `:1646`) to
   see what "done" looks like.
-- **If you want the real paper comparison:** implement the §6.2 semilinear elliptic
+- **If you want the real paper comparison:** implement the §5.2 semilinear elliptic
   `F` with a FEM discretization, wire its adjoint into `VectorMap`, and run a
   mesh-refinement sweep. That is the one piece standing between "faithful
   finite-dim port" and "reproduces the paper."
@@ -1027,4 +1028,4 @@ test meaningless. (`trustregion.jl:138`, `test_risk_finitedim_p1.jl:65`)
 
 *Built from a full read of all 10 source files, the test suite, the demo, and the
 paper. Every code pointer is `file.jl:line`; every paper pointer is
-`main.tex:line` against `paper/arXiv-2604.07216v1/`.*
+`main.tex:line` against the arXiv:2604.07216v1 source.*
