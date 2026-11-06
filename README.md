@@ -17,6 +17,10 @@ structured nonsmooth / risk-averse optimization from
 > Optimization with Application to Risk-Averse Stochastic Programming*,
 > arXiv:2604.07216 (2026). <https://arxiv.org/abs/2604.07216>
 
+This port follows **v1** of the paper (April 2026). The paper has since been
+revised (v4, October 2026), and this code has not been checked against the
+revisions.
+
 with its trust-region scaffold ported from the Rapid Optimization Library
 ([ROL](https://rol.sandia.gov)), part of the
 [Trilinos Project](https://trilinos.github.io). Please cite those works, not
